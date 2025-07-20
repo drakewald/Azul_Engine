@@ -1,22 +1,29 @@
 import init, { WasmGame } from './pkg/azul_engine.js';
 
+// --- DOM Elements ---
+const setupScreen = document.getElementById('setup-screen');
+const gameScreen = document.getElementById('game-screen');
 const gameContainer = document.getElementById('game-container');
 const playersContainer = document.getElementById('players-container');
+const numPlayersSelect = document.getElementById('num-players');
+const playerOptionsContainer = document.getElementById('player-options-container');
+const startGameBtn = document.getElementById('start-game-btn');
+
+// --- Game State Variables ---
 let game;
 let WALL_LAYOUT;
 let selectedTake = null;
+let playerConfigs = []; // e.g., ['Human', 'MctsAI']
 
+// --- Render Functions ---
 function render() {
   if (!game) return;
   const state = game.getState();
   if (!state) return;
 
-  // --- BANNER LOGIC ---
   const existingBanner = document.getElementById('end-game-banner');
   if (existingBanner) existingBanner.remove();
-
-  // The banner now ONLY depends on the trigger flag.
-  if (state.end_game_triggered) {
+  if (state.end_game_triggered && !isGameOver()) {
     const banner = document.createElement('div');
     banner.id = 'end-game-banner';
     banner.innerText = 'FINAL ROUND';
@@ -27,7 +34,6 @@ function render() {
   playersContainer.innerHTML = '';
   const currentPlayerIdx = state.current_player_idx;
 
-  // ... (Rest of the rendering logic is the same)
   const factoriesDiv = document.createElement('div');
   factoriesDiv.innerHTML = '<h2>Factories</h2>';
   state.factories.forEach((factory, factoryIndex) => {
@@ -44,6 +50,7 @@ function render() {
     factoriesDiv.appendChild(factoryDiv);
   });
   gameContainer.appendChild(factoriesDiv);
+
   const centerDiv = document.createElement('div');
   centerDiv.className = 'center';
   centerDiv.innerHTML = `<strong>Center:</strong> `;
@@ -55,10 +62,11 @@ function render() {
     centerDiv.appendChild(tileDiv);
   });
   gameContainer.appendChild(centerDiv);
+
   state.players.forEach((player, playerIndex) => {
     const playerDiv = document.createElement('div');
     playerDiv.className = 'player-board';
-    playerDiv.innerHTML = `<h2>Player ${playerIndex + 1} (Score: ${player.score})</h2>`;
+    playerDiv.innerHTML = `<h2>Player ${playerIndex + 1} (${playerConfigs[playerIndex]}) (Score: ${player.score})</h2>`;
     if (playerIndex === currentPlayerIdx && !isGameOver()) {
       playerDiv.style.borderColor = 'gold';
     }
@@ -67,23 +75,23 @@ function render() {
     const patternLinesDiv = document.createElement('div');
     patternLinesDiv.className = 'pattern-lines';
     player.pattern_lines.forEach((line, i) => {
-        const lineDiv = document.createElement('div');
-        lineDiv.className = 'pattern-line';
-        lineDiv.id = `p${playerIndex}-row${i}`;
-        const capacity = i + 1;
-        const numPlaceholders = capacity - line.length;
-        for (let j = 0; j < numPlaceholders; j++) {
-            const placeholderSpan = document.createElement('span');
-            placeholderSpan.className = 'tile placeholder';
-            lineDiv.appendChild(placeholderSpan);
-        }
-        line.forEach(tile => {
-            const tileSpan = document.createElement('span');
-            tileSpan.className = `tile ${tile}`;
-            tileSpan.innerText = tile.charAt(0);
-            lineDiv.appendChild(tileSpan);
-        });
-        patternLinesDiv.appendChild(lineDiv);
+      const lineDiv = document.createElement('div');
+      lineDiv.className = 'pattern-line';
+      lineDiv.id = `p${playerIndex}-row${i}`;
+      const capacity = i + 1;
+      const numPlaceholders = capacity - line.length;
+      for (let j = 0; j < numPlaceholders; j++) {
+        const placeholderSpan = document.createElement('span');
+        placeholderSpan.className = 'tile placeholder';
+        lineDiv.appendChild(placeholderSpan);
+      }
+      line.forEach(tile => {
+        const tileSpan = document.createElement('span');
+        tileSpan.className = `tile ${tile}`;
+        tileSpan.innerText = tile.charAt(0);
+        lineDiv.appendChild(tileSpan);
+      });
+      patternLinesDiv.appendChild(lineDiv);
     });
     boardGrid.appendChild(patternLinesDiv);
     const wallDiv = document.createElement('div');
@@ -121,6 +129,7 @@ function render() {
     playerDiv.appendChild(floorDiv);
     playersContainer.appendChild(playerDiv);
   });
+
   if (selectedTake) {
     const allMoves = game.getLegalMoves();
     const validPlacements = allMoves.filter(move =>
@@ -139,8 +148,9 @@ function render() {
   }
 }
 
+// --- Game Logic Functions ---
 function tileClicked(tileColor, source) {
-  if (isGameOver()) return; // Prevent moves after the game is truly over.
+  if (isGameOver() || playerConfigs[game.getState().current_player_idx] !== 'Human') return;
 
   if (selectedTake && JSON.stringify(selectedTake.source) === JSON.stringify(source) && selectedTake.tile === tileColor) {
     selectedTake = null;
@@ -154,60 +164,117 @@ function placementClicked(pattern_line_idx) {
   const move = { ...selectedTake, pattern_line_idx };
   game.applyMove(move);
   selectedTake = null;
+  handleEndOfTurn();
+}
 
-  const state = game.getState();
+function handleEndOfTurn() {
+  let state = game.getState();
   const isDraftingOver = state.factories.every(f => f.length === 0) && state.center.length === 0;
 
-  if (!isDraftingOver) {
-    render();
-    return;
+  if (isDraftingOver) {
+    game.runFullTilingPhase();
+    state = game.getState();
+    if (isGameOver()) {
+      game.applyEndGameScoring();
+      render();
+      const finalState = game.getState();
+      const winner = findWinner(finalState);
+      alert(`Game Over! The winner is Player ${winner.index + 1} with ${winner.score} points!`);
+      return;
+    }
   }
+  render();
+  checkForAIMove();
+}
 
-  // --- End of Round Logic ---
-  game.runFullTilingPhase();
+function checkForAIMove() {
+  const state = game.getState();
+  const currentPlayerType = playerConfigs[state.current_player_idx];
   
-  // The game ends ONLY after the tiling phase is complete and a row is filled.
-  if (isGameOver()) {
-    console.log("--- Game Over! Calculating Final Scores ---");
-    game.applyEndGameScoring();
-    render(); // Render the final board state
+  if (currentPlayerType !== 'Human' && !isGameOver()) {
+    document.body.style.pointerEvents = 'none';
+    setTimeout(() => {
+      console.log(`--- Running ${currentPlayerType} for Player ${state.current_player_idx + 1} ---`);
+      game.runAiTurn();
+      document.body.style.pointerEvents = 'auto';
+      handleEndOfTurn();
+    }, 1000);
+  }
+}
+
+// --- Setup Functions ---
+function updatePlayerOptions(numPlayers) {
+  playerOptionsContainer.innerHTML = '';
+  for (let i = 0; i < numPlayers; i++) {
+    const div = document.createElement('div');
+    div.className = 'player-option';
+    // CORRECTED: Added MctsAI to the dropdown
+    div.innerHTML = `
+      <label for="player-type-${i}">Player ${i + 1}:</label>
+      <select id="player-type-${i}">
+        <option value="Human" ${i === 0 ? 'selected' : ''}>Human</option>
+        <option value="SimpleAI">Simple AI</option>
+        <option value="HeuristicAI">Heuristic AI</option>
+        <option value="MctsAI" ${i !== 0 ? 'selected' : ''}>MCTS AI</option>
+      </select>
+    `;
+    playerOptionsContainer.appendChild(div);
+  }
+}
+
+function startGame() {
+  const numPlayers = parseInt(numPlayersSelect.value, 10);
+  playerConfigs = [];
+  const playerTypesForWasm = [];
+  for (let i = 0; i < numPlayers; i++) {
+    const select = document.getElementById(`player-type-${i}`);
+    const playerType = select.value;
+    playerConfigs.push(playerType);
     
-    const finalState = game.getState();
-    const winner = findWinner(finalState);
-    alert(`Game Over! The winner is Player ${winner.index + 1} with ${winner.score} points!`);
-    return;
+    // CORRECTED: Added the mapping for MctsAI
+    if (playerType === 'Human') playerTypesForWasm.push(0);
+    if (playerType === 'SimpleAI') playerTypesForWasm.push(1);
+    if (playerType === 'HeuristicAI') playerTypesForWasm.push(2);
+    if (playerType === 'MctsAI') playerTypesForWasm.push(3);
   }
-  
-  render(); // Render for the next round
+
+  game = new WasmGame(playerTypesForWasm);
+  WALL_LAYOUT = game.getWallLayout();
+
+  setupScreen.style.display = 'none';
+  gameScreen.style.display = 'flex';
+
+  render();
+  checkForAIMove();
 }
 
-// This helper function now calls our Wasm function.
+// --- Helper Functions ---
 function isGameOver() {
-    if (!game) return false;
-    return game.isGameOver();
+  if (!game) return false;
+  return game.isGameOver();
 }
 
-// This can remain a JS helper, as it's pure presentation logic.
 function findWinner(state) {
-    let bestPlayer = { index: 0, score: -1, rows: 0 }; // Start score at -1
-    state.players.forEach((player, index) => {
-        const completedRows = player.wall.filter(row => row.every(t => t !== null)).length;
-        if (player.score > bestPlayer.score) {
-            bestPlayer = { index, score: player.score, rows: completedRows };
-        } else if (player.score === bestPlayer.score) {
-            if (completedRows > bestPlayer.rows) {
-                bestPlayer = { index, score: player.score, rows: completedRows };
-            }
-        }
-    });
-    return bestPlayer;
+  let bestPlayer = { index: 0, score: -1, rows: 0 };
+  state.players.forEach((player, index) => {
+    const completedRows = player.wall.filter(row => row.every(t => t !== null)).length;
+    if (player.score > bestPlayer.score) {
+      bestPlayer = { index, score: player.score, rows: completedRows };
+    } else if (player.score === bestPlayer.score) {
+      if (completedRows > bestPlayer.rows) {
+        bestPlayer = { index, score: player.score, rows: completedRows };
+      }
+    }
+  });
+  return bestPlayer;
 }
 
+// --- Main Execution ---
 async function main() {
   await init();
-  game = new WasmGame(2);
-  WALL_LAYOUT = game.getWallLayout();
-  render();
+  numPlayersSelect.addEventListener('change', (e) => updatePlayerOptions(e.target.value));
+  startGameBtn.addEventListener('click', startGame);
+  updatePlayerOptions(numPlayersSelect.value);
 }
 
 main();
