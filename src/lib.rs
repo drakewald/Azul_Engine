@@ -5,6 +5,12 @@ use rand::thread_rng;
 use std::fmt;
 use wasm_bindgen::prelude::*;
 
+// --- Module Declarations ---
+mod ai;
+
+// --- Imports ---
+use ai::{AIAgent, simple_ai::SimpleAI, heuristic_ai::HeuristicAI, mcts_ai::MctsAI};
+
 // --- Core Game Structs (Pure Rust, no Wasm annotations) ---
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -49,6 +55,16 @@ pub struct Move {
     pub tile: Tile,
     pub pattern_line_idx: usize,
 }
+
+// NEW: PlayerType enum to distinguish different controllers
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlayerType {
+    Human,
+    SimpleAI,
+    HeuristicAI,
+    MctsAI,
+}
+
 
 const WALL_LAYOUT: [[Tile; 5]; 5] = [
     [Tile::Blue, Tile::Yellow, Tile::Red, Tile::Black, Tile::White],
@@ -325,14 +341,29 @@ fn tile_to_char(tile: Tile) -> char {
 #[wasm_bindgen]
 pub struct WasmGame {
     state: GameState,
+    player_configs: Vec<PlayerType>,
 }
 
 #[wasm_bindgen]
 impl WasmGame {
     #[wasm_bindgen(constructor)]
-    pub fn new(num_players: usize) -> WasmGame {
+    pub fn new(player_config_js: JsValue) -> WasmGame {
+        let player_types_as_u8: Vec<u8> = serde_wasm_bindgen::from_value(player_config_js).unwrap();
+        let num_players = player_types_as_u8.len();
+
+        let player_configs = player_types_as_u8.into_iter().map(|n| {
+            match n {
+                0 => PlayerType::Human,
+                1 => PlayerType::SimpleAI,
+                2 => PlayerType::HeuristicAI, 
+                3 => PlayerType::MctsAI,
+                _ => panic!("Invalid player type"),
+            }
+        }).collect();
+
         WasmGame {
             state: GameState::new(num_players),
+            player_configs,
         }
     }
 
@@ -352,31 +383,27 @@ impl WasmGame {
         self.state.apply_move(&player_move);
     }
 
-    #[wasm_bindgen(js_name = getWallLayout)]
-    pub fn get_wall_layout(&self) -> JsValue {
-        serde_wasm_bindgen::to_value(&WALL_LAYOUT).unwrap()
-    }
-
     #[wasm_bindgen(js_name = runFullTilingPhase)]
     pub fn run_full_tiling_phase(&mut self) {
-        // STEP 1: Find who starts next *before* the flags are cleared.
         let next_starter_idx = self.state.players.iter().position(|p| p.has_first_player_marker)
             .unwrap_or(self.state.current_player_idx);
 
-        // STEP 2: Run the tiling phase for each player, which clears the flag.
         let mut discard_pile_ref = std::mem::take(&mut self.state.discard_pile);
         for player in self.state.players.iter_mut() {
             player.run_tiling_phase(&mut discard_pile_ref);
         }
         self.state.discard_pile = discard_pile_ref;
         
-        // STEP 3: Set the starting player for the next round using the index we saved in Step 1.
         self.state.current_player_idx = next_starter_idx;
 
-        // STEP 4: Refill the factories for the next round if the game isn't over.
         if !self.state.end_game_triggered {
             self.state.refill_factories();
         }
+    }
+
+    #[wasm_bindgen(js_name = applyEndGameScoring)]
+    pub fn apply_end_game_scoring(&mut self) {
+        self.state.apply_end_game_scoring();
     }
 
     #[wasm_bindgen(js_name = isGameOver)]
@@ -384,8 +411,25 @@ impl WasmGame {
         self.state.is_game_over()
     }
 
-    #[wasm_bindgen(js_name = applyEndGameScoring)]
-    pub fn apply_end_game_scoring(&mut self) {
-        self.state.apply_end_game_scoring();
+    #[wasm_bindgen(js_name = getWallLayout)]
+    pub fn get_wall_layout(&self) -> JsValue {
+        serde_wasm_bindgen::to_value(&WALL_LAYOUT).unwrap()
+    }
+
+    #[wasm_bindgen(js_name = runAiTurn)]
+    pub fn run_ai_turn(&mut self) {
+        let current_player_type = self.player_configs[self.state.current_player_idx];
+        
+        // Update this match statement
+        let agent: Box<dyn AIAgent> = match current_player_type {
+            PlayerType::SimpleAI => Box::new(SimpleAI),
+            PlayerType::HeuristicAI => Box::new(HeuristicAI), 
+            PlayerType::MctsAI => Box::new(MctsAI::new(self.state.clone())),
+            PlayerType::Human => return,
+        };
+
+        if let Some(ai_move) = agent.get_move(&self.state) {
+            self.state.apply_move(&ai_move);
+        }
     }
 }
