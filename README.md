@@ -2,7 +2,7 @@
 
 This project is a complete implementation of the board game Azul, written in Rust. The core game logic is compiled to WebAssembly (Wasm), allowing it to run in any modern web browser with a simple HTML and JavaScript frontend.
 
-The engine enforces all the rules for a 2-player game, including tile drafting, pattern line placement, wall tiling, scoring, and end-game conditions.
+The engine enforces all the rules for a game, including tile drafting, pattern line placement, wall tiling, scoring, and end-game conditions.
 
 ## Features
 
