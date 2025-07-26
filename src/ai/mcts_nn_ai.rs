@@ -8,7 +8,6 @@ use crate::{
 };
 use std::collections::HashMap;
 
-// MODIFIED: Added `Clone` to the struct.
 #[derive(Clone)]
 struct NnPolicy {
     nn: NeuralNetwork,
@@ -27,11 +26,6 @@ impl MctsPolicy for NnPolicy {
         let policy_map = legal_moves.into_iter().zip(policy_vec.iter().cloned()).collect();
 
         (value, policy_map)
-    }
-
-    fn simulate(&self, game_state: &GameState) -> Vec<f32> {
-        let (value, _) = self.evaluate(game_state);
-        vec![value; game_state.players.len()]
     }
 }
 

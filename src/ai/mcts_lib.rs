@@ -1,16 +1,13 @@
 use crate::{GameState, Move};
 use std::collections::HashMap;
 
-// MODIFIED: Added `Clone` as a requirement for any MctsPolicy.
 pub trait MctsPolicy: Clone {
     fn evaluate(&self, game_state: &GameState) -> (f32, HashMap<Move, f32>);
-    fn simulate(&self, game_state: &GameState) -> Vec<f32>;
 }
 
 pub struct Node {
     pub parent: Option<usize>,
     pub children: Vec<(Move, usize)>,
-    pub untried_moves: Vec<Move>,
     pub visit_count: u32,
     pub total_action_value: f32,
     pub prior_probability: f32,
@@ -19,11 +16,9 @@ pub struct Node {
 
 impl Node {
     fn new(parent: Option<usize>, prior: f32, game_state: GameState) -> Self {
-        let untried_moves = game_state.get_legal_moves();
         Self {
             parent,
             children: Vec::new(),
-            untried_moves,
             visit_count: 0,
             total_action_value: 0.0,
             prior_probability: prior,
@@ -45,7 +40,6 @@ pub struct Mcts<P: MctsPolicy> {
     pub policy_handler: P,
 }
 
-// MODIFIED: The generic parameter P is now also constrained by Clone.
 impl<P: MctsPolicy + Clone> Mcts<P> {
     pub fn new(initial_state: GameState, policy_handler: P) -> Self {
         Self {
@@ -61,10 +55,8 @@ impl<P: MctsPolicy + Clone> Mcts<P> {
 
         if let Some(child_idx) = new_root_child_idx {
             let new_root_state = self.tree[child_idx].game_state.clone();
-            // MODIFIED: Pass a clone of the policy handler.
             *self = Mcts::new(new_root_state, self.policy_handler.clone());
         } else {
-            // MODIFIED: Pass a clone of the policy handler.
             *self = Mcts::new(current_game_state.clone(), self.policy_handler.clone());
         }
     }
@@ -80,29 +72,15 @@ impl<P: MctsPolicy + Clone> Mcts<P> {
 
     pub fn run_search(&mut self, iterations: u32) {
         for _ in 0..iterations {
-            let node_to_simulate_idx = self.select_and_expand();
-            let sim_game_state = self.tree[node_to_simulate_idx].game_state.clone();
-            let scores = self.policy_handler.simulate(&sim_game_state);
-            self.backpropagation(node_to_simulate_idx, &scores);
+            let leaf_idx = self.selection();
+            let value = self.expansion(leaf_idx);
+            self.backpropagation(leaf_idx, value);
         }
     }
 
-    fn select_and_expand(&mut self) -> usize {
+    fn selection(&self) -> usize {
         let mut current_idx = 0;
         loop {
-            if !self.tree[current_idx].untried_moves.is_empty() {
-                let node = &mut self.tree[current_idx];
-                let next_move = node.untried_moves.pop().unwrap();
-                let mut new_state = node.game_state.clone();
-                new_state.apply_move(&next_move);
-                let prior_prob = 1.0 / (node.children.len() + 1) as f32;
-                let new_node = Node::new(Some(current_idx), prior_prob, new_state);
-                let new_node_idx = self.tree.len();
-                self.tree.push(new_node);
-                self.tree[current_idx].children.push((next_move, new_node_idx));
-                return new_node_idx;
-            }
-
             let node = &self.tree[current_idx];
             if node.children.is_empty() {
                 return current_idx;
@@ -121,13 +99,43 @@ impl<P: MctsPolicy + Clone> Mcts<P> {
         }
     }
 
-    fn backpropagation(&mut self, start_idx: usize, scores: &[f32]) {
+    fn expansion(&mut self, leaf_idx: usize) -> f32 {
+        let leaf_node_state = self.tree[leaf_idx].game_state.clone();
+        
+        let (value, policy) = self.policy_handler.evaluate(&leaf_node_state);
+
+        for (legal_move, prior_prob) in policy {
+            let mut new_state = leaf_node_state.clone();
+            new_state.apply_move(&legal_move);
+            
+            let new_node = Node::new(Some(leaf_idx), prior_prob, new_state);
+            let new_node_idx = self.tree.len();
+            self.tree.push(new_node);
+            self.tree[leaf_idx].children.push((legal_move, new_node_idx));
+        }
+        
+        value
+    }
+
+    // MODIFIED: This function is restructured to satisfy the borrow checker.
+    fn backpropagation(&mut self, start_idx: usize, value: f32) {
+        // First, get the value that doesn't change, to avoid a conflicting borrow.
+        let player_at_leaf = self.tree[start_idx].game_state.current_player_idx;
+        
         let mut current_idx = Some(start_idx);
         while let Some(idx) = current_idx {
+            // Now, we can safely get a mutable borrow of the node.
             let node = &mut self.tree[idx];
             node.visit_count += 1;
-            let player_idx = node.game_state.current_player_idx;
-            node.total_action_value += scores[player_idx];
+            
+            let player_at_node = node.game_state.current_player_idx;
+            
+            if player_at_node == player_at_leaf {
+                node.total_action_value += value;
+            } else {
+                node.total_action_value -= value;
+            }
+            
             current_idx = node.parent;
         }
     }
@@ -135,9 +143,12 @@ impl<P: MctsPolicy + Clone> Mcts<P> {
     fn puct_score(&self, node_idx: usize, parent_visit_count: u32) -> f32 {
         let node = &self.tree[node_idx];
         let exploration_constant = 1.41;
-        let q_value = node.mean_action_value();
+        
+        let q_value = -node.mean_action_value();
         let p_value = node.prior_probability;
+
         let exploration_term = exploration_constant * p_value * (parent_visit_count as f32).sqrt() / (1.0 + node.visit_count as f32);
+
         q_value + exploration_term
     }
 }
