@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use rand::seq::SliceRandom;
-use rand::thread_rng;
+use rand::{thread_rng, Rng};
 use std::fmt;
 use wasm_bindgen::prelude::*;
 
@@ -9,7 +9,7 @@ pub mod ai;
 use ai::{
     human_agent::HumanAgent,
     heuristic_ai::HeuristicAI,
-    mcts_ai::MctsAI, 
+    mcts_heuristic_ai::MctsHeuristicAI, 
     simple_ai::SimpleAI, 
     AIAgent
 };
@@ -37,6 +37,31 @@ pub enum Tile {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TileBagSummary {
+    pub blue: usize,
+    pub yellow: usize,
+    pub red: usize,
+    pub black: usize,
+    pub white: usize,
+}
+
+impl TileBagSummary {
+    pub fn from_vec(tiles: &[Tile]) -> Self {
+        let mut summary = Self { blue: 0, yellow: 0, red: 0, black: 0, white: 0 };
+        for &tile in tiles {
+            match tile {
+                Tile::Blue => summary.blue += 1,
+                Tile::Yellow => summary.yellow += 1,
+                Tile::Red => summary.red += 1,
+                Tile::Black => summary.black += 1,
+                Tile::White => summary.white += 1,
+            }
+        }
+        summary
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PlayerBoard {
     pub score: u32,
     pub pattern_lines: Vec<Vec<Tile>>,
@@ -57,19 +82,42 @@ pub struct GameState {
     pub end_game_triggered: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
+pub struct TurnState {
+    pub players: Vec<PlayerBoard>,
+    pub factories: Vec<Vec<Tile>>,
+    pub center: Vec<Tile>,
+    pub current_player_idx: usize,
+    pub first_player_marker_in_center: bool,
+    pub end_game_triggered: bool,
+}
+
+impl From<&GameState> for TurnState {
+    fn from(game_state: &GameState) -> Self {
+        Self {
+            players: game_state.players.clone(),
+            factories: game_state.factories.clone(),
+            center: game_state.center.clone(),
+            current_player_idx: game_state.current_player_idx,
+            first_player_marker_in_center: game_state.first_player_marker_in_center,
+            end_game_triggered: game_state.end_game_triggered,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Hash)]
 pub enum MoveSource {
     Factory(usize),
     Center,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Hash)]
 pub enum MoveDestination {
     PatternLine(usize),
     Floor,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Hash)]
 pub struct Move {
     pub source: MoveSource,
     pub tile: Tile,
@@ -114,6 +162,7 @@ impl GameState {
     }
 
     pub fn refill_factories(&mut self) {
+        let mut rng = thread_rng();
         for factory in self.factories.iter_mut() {
             factory.clear();
             for _ in 0..4 {
@@ -122,9 +171,12 @@ impl GameState {
                         break;
                     }
                     std::mem::swap(&mut self.tile_bag, &mut self.discard_pile);
-                    self.tile_bag.shuffle(&mut thread_rng());
+                    self.tile_bag.shuffle(&mut rng);
                 }
-                if let Some(tile) = self.tile_bag.pop() {
+
+                if !self.tile_bag.is_empty() {
+                    let random_index = rng.gen_range(0..self.tile_bag.len());
+                    let tile = self.tile_bag.remove(random_index);
                     factory.push(tile);
                 }
             }
@@ -183,7 +235,6 @@ impl GameState {
         if let MoveSource::Factory(_) = player_move.source {
             self.center.extend(remaining);
         } else {
-            // MoveSource::Center
             self.center = remaining;
             if self.first_player_marker_in_center {
                 self.first_player_marker_in_center = false;
@@ -249,6 +300,13 @@ impl PlayerBoard {
 
     pub fn has_complete_row(&self) -> bool {
         self.wall.iter().any(|row| row.iter().all(|tile| tile.is_some()))
+    }
+    
+    pub fn count_complete_rows(&self) -> usize {
+        self.wall
+            .iter()
+            .filter(|row| row.iter().all(|tile| tile.is_some()))
+            .count()
     }
 
     fn will_complete_horizontal_row(&self, pattern_line_idx: usize) -> bool {
@@ -329,19 +387,20 @@ impl PlayerBoard {
             discard_pile.append(&mut line);
         }
 
-        let floor_tiles_count = self.floor_line.len();
-        if floor_tiles_count > 0 {
-            let penalty: u32 = FLOOR_PENALTY_VALUES[..floor_tiles_count.min(7)]
+        let mut floor_items_count = self.floor_line.len();
+        if self.has_first_player_marker {
+            floor_items_count += 1;
+        }
+
+        if floor_items_count > 0 {
+            let penalty: u32 = FLOOR_PENALTY_VALUES[..floor_items_count.min(7)]
                 .iter()
                 .sum();
             self.score = self.score.saturating_sub(penalty);
-            discard_pile.append(&mut self.floor_line);
         }
 
-        if self.has_first_player_marker {
-            self.score = self.score.saturating_sub(1);
-            self.has_first_player_marker = false;
-        }
+        discard_pile.append(&mut self.floor_line);
+        self.has_first_player_marker = false;
 
         completed_a_row
     }
@@ -387,19 +446,16 @@ impl PlayerBoard {
 
     pub fn calculate_end_game_bonuses(&self) -> u32 {
         let mut bonus_score = 0;
-        // Row bonuses
         for row in 0..NUM_ROWS {
             if self.wall[row].iter().all(Option::is_some) {
                 bonus_score += 2;
             }
         }
-        // Column bonuses
         for col in 0..NUM_COLS {
             if (0..NUM_ROWS).all(|row| self.wall[row][col].is_some()) {
                 bonus_score += 7;
             }
         }
-        // Color bonuses
         for color_to_check in [
             Tile::Blue,
             Tile::Yellow,
@@ -440,18 +496,10 @@ impl fmt::Display for PlayerBoard {
             let capacity = i + 1;
             let line = &self.pattern_lines[i];
             
-            // Padding for alignment
             for _ in 0..(5 - capacity) { write!(f, "  ")?; }
-            
-            // Empty slots in pattern line
             for _ in 0..(capacity - line.len()) { write!(f, "[_] ")?; }
-
-            // Filled slots in pattern line
             for tile in line { write!(f, "[{}] ", tile_to_char(*tile))?; }
-
             write!(f, "   |   ")?;
-
-            // The Wall
             for tile_option in &self.wall[i] {
                 match tile_option {
                     Some(tile) => write!(f, "[{}] ", tile_to_char(*tile))?,
@@ -467,8 +515,6 @@ impl fmt::Display for PlayerBoard {
         writeln!(f)
     }
 }
-
-// --- WebAssembly Wrapper ---
 
 #[wasm_bindgen]
 pub struct WasmGame {
@@ -490,6 +536,8 @@ impl WasmGame {
             ));
         }
 
+        let initial_state = GameState::new(num_players);
+
         let agents: Vec<Box<dyn AIAgent>> = player_types_as_u8
             .into_iter()
             .map(|n| -> Box<dyn AIAgent> {
@@ -497,14 +545,15 @@ impl WasmGame {
                     0 => Box::new(HumanAgent),
                     1 => Box::new(SimpleAI),
                     2 => Box::new(HeuristicAI),
-                    3 => Box::new(MctsAI::new()),
+                    // MODIFIED: Removed the extra `initial_state` argument
+                    3 => Box::new(MctsHeuristicAI::new(5000)),
                     _ => Box::new(HumanAgent),
                 }
             })
             .collect();
 
         Ok(WasmGame {
-            state: GameState::new(num_players),
+            state: initial_state,
             agents,
         })
     }
