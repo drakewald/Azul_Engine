@@ -13,193 +13,224 @@ const startGameBtn = document.getElementById('start-game-btn');
 let game;
 let WALL_LAYOUT;
 let selectedTake = null;
-let playerConfigs = []; // e.g., ['Human', 'MctsAI']
+let playerConfigs = [];
 
-// --- Render Functions ---
-function render() {
+// --- Render Function ---
+async function render() {
   if (!game) return;
-  const state = game.getState();
-  if (!state) return;
 
-  const existingBanner = document.getElementById('end-game-banner');
-  if (existingBanner) existingBanner.remove();
-  if (state.end_game_triggered && !isGameOver()) {
-    const banner = document.createElement('div');
-    banner.id = 'end-game-banner';
-    banner.innerText = 'FINAL ROUND';
-    document.body.prepend(banner);
-  }
+  try {
+    const state = await game.getState();
+    if (!state) return;
 
-  gameContainer.innerHTML = '';
-  playersContainer.innerHTML = '';
-  const currentPlayerIdx = state.current_player_idx;
-
-  const factoriesDiv = document.createElement('div');
-  factoriesDiv.innerHTML = '<h2>Factories</h2>';
-  state.factories.forEach((factory, factoryIndex) => {
-    const factoryDiv = document.createElement('div');
-    factoryDiv.className = 'factory';
-    factoryDiv.innerHTML = `<strong>F${factoryIndex + 1}:</strong> `;
-    factory.forEach(tile => {
-      const tileDiv = document.createElement('span');
-      tileDiv.className = `tile ${tile}`;
-      tileDiv.innerText = tile.charAt(0);
-      tileDiv.addEventListener('click', () => tileClicked(tile, { Factory: factoryIndex }));
-      factoryDiv.appendChild(tileDiv);
-    });
-    factoriesDiv.appendChild(factoryDiv);
-  });
-  gameContainer.appendChild(factoriesDiv);
-
-  const centerDiv = document.createElement('div');
-  centerDiv.className = 'center';
-  centerDiv.innerHTML = `<strong>Center:</strong> `;
-  state.center.forEach(tile => {
-    const tileDiv = document.createElement('span');
-    tileDiv.className = `tile ${tile}`;
-    tileDiv.innerText = tile.charAt(0);
-    tileDiv.addEventListener('click', () => tileClicked(tile, 'Center'));
-    centerDiv.appendChild(tileDiv);
-  });
-  gameContainer.appendChild(centerDiv);
-
-  state.players.forEach((player, playerIndex) => {
-    const playerDiv = document.createElement('div');
-    playerDiv.className = 'player-board';
-    playerDiv.innerHTML = `<h2>Player ${playerIndex + 1} (${playerConfigs[playerIndex]}) (Score: ${player.score})</h2>`;
-    if (playerIndex === currentPlayerIdx && !isGameOver()) {
-      playerDiv.style.borderColor = 'gold';
+    const existingBanner = document.getElementById('end-game-banner');
+    if (existingBanner) existingBanner.remove();
+    if (state.end_game_triggered && !game.isGameOver()) {
+        const banner = document.createElement('div');
+        banner.id = 'end-game-banner';
+        banner.innerText = 'FINAL ROUND';
+        document.body.prepend(banner);
     }
-    const boardGrid = document.createElement('div');
-    boardGrid.className = 'board-grid';
-    const patternLinesDiv = document.createElement('div');
-    patternLinesDiv.className = 'pattern-lines';
-    player.pattern_lines.forEach((line, i) => {
-      const lineDiv = document.createElement('div');
-      lineDiv.className = 'pattern-line';
-      lineDiv.id = `p${playerIndex}-row${i}`;
-      const capacity = i + 1;
-      const numPlaceholders = capacity - line.length;
-      for (let j = 0; j < numPlaceholders; j++) {
-        const placeholderSpan = document.createElement('span');
-        placeholderSpan.className = 'tile placeholder';
-        lineDiv.appendChild(placeholderSpan);
-      }
-      line.forEach(tile => {
-        const tileSpan = document.createElement('span');
-        tileSpan.className = `tile ${tile}`;
-        tileSpan.innerText = tile.charAt(0);
-        lineDiv.appendChild(tileSpan);
+    
+    gameContainer.innerHTML = '<h2>Factories</h2>';
+    playersContainer.innerHTML = '';
+    
+    state.factories.forEach((factory, factoryIndex) => {
+      const factoryDiv = document.createElement('div');
+      factoryDiv.className = 'factory';
+      if (factory.length === 0) factoryDiv.classList.add('empty');
+      factoryDiv.innerHTML = `<strong>F${factoryIndex + 1}:</strong> `;
+      factory.forEach(tile => {
+        const tileDiv = document.createElement('span');
+        tileDiv.className = `tile ${tile}`;
+        tileDiv.innerText = tile.charAt(0);
+        tileDiv.addEventListener('click', () => tileClicked(tile, { Factory: factoryIndex }));
+        factoryDiv.appendChild(tileDiv);
       });
-      patternLinesDiv.appendChild(lineDiv);
+      gameContainer.appendChild(factoryDiv);
     });
-    boardGrid.appendChild(patternLinesDiv);
-    const wallDiv = document.createElement('div');
-    wallDiv.className = 'wall-grid';
-    player.wall.forEach((row, rowIndex) => {
-      const rowDiv = document.createElement('div');
-      rowDiv.className = 'wall-row';
-      row.forEach((tile, colIndex) => {
-        const tileSpan = document.createElement('span');
-        tileSpan.className = 'tile';
-        if (tile) {
-          tileSpan.classList.add(tile);
-          tileSpan.innerText = tile.charAt(0);
-        } else {
-          const ghostColor = WALL_LAYOUT[rowIndex][colIndex];
-          tileSpan.classList.add(ghostColor, 'ghost');
-          tileSpan.innerText = ghostColor.charAt(0);
+
+    const centerDiv = document.createElement('div');
+    centerDiv.className = 'center';
+    centerDiv.innerHTML = '<h2>Center</h2>';
+    const centerTileArea = document.createElement('div');
+    centerTileArea.className = 'tile-area';
+
+    if (state.first_player_marker_in_center) {
+        const firstPlayerMarker = document.createElement('span');
+        firstPlayerMarker.className = 'tile placeholder';
+        firstPlayerMarker.innerText = '1';
+        centerTileArea.appendChild(firstPlayerMarker);
+    }
+
+    state.center.forEach(tile => {
+        const tileDiv = document.createElement('span');
+        tileDiv.className = `tile ${tile}`;
+        tileDiv.innerText = tile.charAt(0);
+        tileDiv.addEventListener('click', () => tileClicked(tile, 'Center'));
+        centerTileArea.appendChild(tileDiv);
+    });
+    centerDiv.appendChild(centerTileArea);
+    gameContainer.appendChild(centerDiv);
+    
+    state.players.forEach((player, playerIndex) => {
+        const playerDiv = document.createElement('div');
+        playerDiv.className = 'player-board';
+        if (playerIndex === state.current_player_idx && !game.isGameOver()) {
+            playerDiv.style.borderColor = 'gold';
+            playerDiv.style.borderWidth = '2px';
         }
-        rowDiv.appendChild(tileSpan);
-      });
-      wallDiv.appendChild(rowDiv);
-    });
-    boardGrid.appendChild(wallDiv);
-    playerDiv.appendChild(boardGrid);
-    const floorDiv = document.createElement('div');
-    floorDiv.className = 'floor-line';
-    floorDiv.innerHTML = '<strong>Floor:</strong> ';
-    if (player.has_first_player_marker) {
-      floorDiv.innerHTML += '<span class="tile placeholder">1</span> ';
-    }
-    player.floor_line.forEach(tile => {
-      floorDiv.innerHTML += `<span class="tile ${tile}">${tile.charAt(0)}</span>`;
-    });
-    floorDiv.id = `p${playerIndex}-floor`;
-    playerDiv.appendChild(floorDiv);
-    playersContainer.appendChild(playerDiv);
-  });
+        playerDiv.innerHTML = `<h3>Player ${playerIndex + 1} (Score: ${player.score})</h3>`;
 
-  if (selectedTake) {
-    const allMoves = game.getLegalMoves();
-    const validPlacements = allMoves.filter(move =>
-      JSON.stringify(move.source) === JSON.stringify(selectedTake.source) &&
-      move.tile === selectedTake.tile
-    );
-    const validRows = validPlacements.map(move => move.pattern_line_idx);
-    validRows.forEach(rowIndex => {
-      const rowId = rowIndex < 5 ? `p${currentPlayerIdx}-row${rowIndex}` : `p${currentPlayerIdx}-floor`;
-      const element = document.getElementById(rowId);
-      if (element) {
-        element.classList.add('highlight');
-        element.addEventListener('click', () => placementClicked(rowIndex));
-      }
+        const boardGrid = document.createElement('div');
+        boardGrid.className = 'board-grid';
+
+        const patternLinesDiv = document.createElement('div');
+        patternLinesDiv.className = 'pattern-lines';
+        player.pattern_lines.forEach((line, i) => {
+            const lineDiv = document.createElement('div');
+            lineDiv.className = 'pattern-line';
+            lineDiv.id = `p${playerIndex}-row${i}`;
+            const capacity = i + 1;
+            for (let j = 0; j < capacity - line.length; j++) {
+                lineDiv.appendChild(document.createElement('span')).className = 'tile placeholder';
+            }
+            line.forEach(tile => {
+                const tileSpan = document.createElement('span');
+                tileSpan.className = `tile ${tile}`;
+                tileSpan.innerText = tile.charAt(0);
+                lineDiv.appendChild(tileSpan);
+            });
+            patternLinesDiv.appendChild(lineDiv);
+        });
+        
+        const wallDiv = document.createElement('div');
+        wallDiv.className = 'wall-grid';
+        player.wall.forEach((row, rowIndex) => {
+            const rowDiv = document.createElement('div');
+            rowDiv.className = 'wall-row';
+            row.forEach((tile, colIndex) => {
+                const tileSpan = document.createElement('span');
+                tileSpan.className = 'tile';
+                if (tile) {
+                    tileSpan.classList.add(tile);
+                    tileSpan.innerText = tile.charAt(0);
+                } else {
+                    tileSpan.classList.add(WALL_LAYOUT[rowIndex][colIndex], 'ghost');
+                }
+                rowDiv.appendChild(tileSpan);
+            });
+            wallDiv.appendChild(rowDiv);
+        });
+
+        const floorDiv = document.createElement('div');
+        floorDiv.className = 'floor-line';
+        floorDiv.innerHTML = '<strong>Floor:</strong> ';
+        if (player.has_first_player_marker) {
+            const marker = document.createElement('span');
+            marker.className = 'tile placeholder';
+            marker.innerText = '1';
+            floorDiv.appendChild(marker);
+        }
+        player.floor_line.forEach(tile => {
+            const tileSpan = document.createElement('span');
+            tileSpan.className = `tile ${tile}`;
+            tileSpan.innerText = tile.charAt(0);
+            floorDiv.appendChild(tileSpan);
+        });
+        floorDiv.id = `p${playerIndex}-floor`;
+
+        boardGrid.appendChild(patternLinesDiv);
+        boardGrid.appendChild(wallDiv);
+        playerDiv.appendChild(boardGrid);
+        playerDiv.appendChild(floorDiv);
+        
+        playersContainer.appendChild(playerDiv);
     });
+    
+    if (selectedTake) {
+        highlightLegalPlacements();
+    }
+
+  } catch (error) {
+      console.error("Failed to render game state:", error);
+      alert(`Error rendering game: ${error}`);
   }
 }
 
 // --- Game Logic Functions ---
 function tileClicked(tileColor, source) {
-  if (isGameOver() || playerConfigs[game.getState().current_player_idx] !== 'Human') return;
-
-  if (selectedTake && JSON.stringify(selectedTake.source) === JSON.stringify(source) && selectedTake.tile === tileColor) {
-    selectedTake = null;
-  } else {
-    selectedTake = { tile: tileColor, source: source };
-  }
-  render();
-}
-
-function placementClicked(pattern_line_idx) {
-  const move = { ...selectedTake, pattern_line_idx };
-  game.applyMove(move);
-  selectedTake = null;
-  handleEndOfTurn();
-}
-
-function handleEndOfTurn() {
-  let state = game.getState();
-  const isDraftingOver = state.factories.every(f => f.length === 0) && state.center.length === 0;
-
-  if (isDraftingOver) {
-    game.runFullTilingPhase();
-    state = game.getState();
-    if (isGameOver()) {
-      game.applyEndGameScoring();
-      render();
-      const finalState = game.getState();
-      const winner = findWinner(finalState);
-      alert(`Game Over! The winner is Player ${winner.index + 1} with ${winner.score} points!`);
-      return;
+    if (game.isGameOver() || playerConfigs[game.getState().current_player_idx] !== 'Human') return;
+    if (selectedTake && JSON.stringify(selectedTake.source) === JSON.stringify(source) && selectedTake.tile === tileColor) {
+        selectedTake = null;
+    } else {
+        selectedTake = { tile: tileColor, source: source };
     }
-  }
-  render();
-  checkForAIMove();
+    render();
+}
+
+async function placementClicked(rowIndex) {
+    if (!selectedTake) return;
+    const destination = (rowIndex < 5) ? { PatternLine: rowIndex } : 'Floor';
+    const move = { ...selectedTake, destination };
+
+    try {
+        await game.applyMove(move);
+        selectedTake = null;
+        await handleEndOfTurn();
+    } catch (error) {
+        console.error("Error applying move:", error);
+        selectedTake = null;
+        render();
+    }
+}
+
+async function handleEndOfTurn() {
+    try {
+        const state = await game.getState();
+        const isDraftingOver = state.factories.every(f => f.length === 0) && state.center.length === 0;
+
+        if (isDraftingOver) {
+            await game.handleRoundEnd();
+        }
+
+        if (game.isGameOver()) {
+            await game.applyEndGameScoring();
+            render();
+            const finalState = await game.getState();
+            const winner = findWinner(finalState);
+            setTimeout(() => alert(`Game Over! Player ${winner.index + 1} wins with ${winner.score} points!`), 100);
+            return;
+        }
+
+        render();
+        checkForAIMove();
+    } catch (error) {
+        console.error("Error at end of turn:", error);
+    }
 }
 
 function checkForAIMove() {
-  const state = game.getState();
-  const currentPlayerType = playerConfigs[state.current_player_idx];
-  
-  if (currentPlayerType !== 'Human' && !isGameOver()) {
-    document.body.style.pointerEvents = 'none';
-    setTimeout(() => {
-      console.log(`--- Running ${currentPlayerType} for Player ${state.current_player_idx + 1} ---`);
-      game.runAiTurn();
-      document.body.style.pointerEvents = 'auto';
-      handleEndOfTurn();
-    }, 1000);
-  }
+    try {
+        const state = game.getState();
+        const currentPlayerType = playerConfigs[state.current_player_idx];
+
+        if (currentPlayerType !== 'Human' && !game.isGameOver()) {
+            document.body.style.pointerEvents = 'none';
+            setTimeout(async () => {
+                try {
+                    await game.runAiTurn();
+                    await handleEndOfTurn();
+                } catch(aiError) {
+                    console.error("AI Error:", aiError);
+                } finally {
+                    document.body.style.pointerEvents = 'auto';
+                }
+            }, 500);
+        }
+    } catch (error) {
+        console.error("Could not check for AI move:", error);
+    }
 }
 
 // --- Setup Functions ---
@@ -208,52 +239,79 @@ function updatePlayerOptions(numPlayers) {
   for (let i = 0; i < numPlayers; i++) {
     const div = document.createElement('div');
     div.className = 'player-option';
-    // CORRECTED: Added MctsAI to the dropdown
     div.innerHTML = `
       <label for="player-type-${i}">Player ${i + 1}:</label>
       <select id="player-type-${i}">
         <option value="Human" ${i === 0 ? 'selected' : ''}>Human</option>
         <option value="SimpleAI">Simple AI</option>
         <option value="HeuristicAI">Heuristic AI</option>
-        <option value="MctsAI" ${i !== 0 ? 'selected' : ''}>MCTS AI</option>
+        <option value="MctsAI">MCTS Heuristic AI</option>
+        <option value="MctsNnAI" ${i !== 0 ? 'selected' : ''}>MCTS NN AI (Release Model)</option>
       </select>
     `;
     playerOptionsContainer.appendChild(div);
   }
 }
 
-function startGame() {
+async function startGame() {
   const numPlayers = parseInt(numPlayersSelect.value, 10);
+  
   playerConfigs = [];
   const playerTypesForWasm = [];
+  let needsModel = false;
+
   for (let i = 0; i < numPlayers; i++) {
-    const select = document.getElementById(`player-type-${i}`);
-    const playerType = select.value;
+    const selectElement = document.getElementById(`player-type-${i}`);
+    const playerType = selectElement.value;
     playerConfigs.push(playerType);
     
-    // CORRECTED: Added the mapping for MctsAI
     if (playerType === 'Human') playerTypesForWasm.push(0);
     if (playerType === 'SimpleAI') playerTypesForWasm.push(1);
     if (playerType === 'HeuristicAI') playerTypesForWasm.push(2);
     if (playerType === 'MctsAI') playerTypesForWasm.push(3);
+    if (playerType === 'MctsNnAI') {
+        playerTypesForWasm.push(4);
+        needsModel = true;
+    }
   }
 
-  game = new WasmGame(playerTypesForWasm);
-  WALL_LAYOUT = game.getWallLayout();
+  let modelBytes = null;
+  if (needsModel) {
+      // MODIFIED: Always fetch the single release model.
+      const modelPath = 'release_models/azul_alpha.ot';
+      console.log(`Fetching release model: ${modelPath}`);
+      try {
+          const response = await fetch(modelPath);
+          if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+          const buffer = await response.arrayBuffer();
+          modelBytes = new Uint8Array(buffer);
+      } catch (error) {
+          console.error("Failed to fetch the model:", error);
+          alert("Could not fetch the release AI model. Please ensure a trained model exists in the 'release_models' directory and the server is running correctly.");
+          return;
+      }
+  }
 
-  setupScreen.style.display = 'none';
-  gameScreen.style.display = 'flex';
+  try {
+    const gameConfig = {
+        player_types: playerTypesForWasm,
+        model_bytes: modelBytes,
+    };
+    game = new WasmGame(gameConfig);
+    WALL_LAYOUT = await game.getWallLayout();
 
-  render();
-  checkForAIMove();
+    setupScreen.style.display = 'none';
+    gameScreen.style.display = 'flex';
+
+    render();
+    checkForAIMove();
+  } catch (error) {
+    console.error("Failed to start game:", error);
+    alert(`Could not start the game: ${error}`);
+  }
 }
 
 // --- Helper Functions ---
-function isGameOver() {
-  if (!game) return false;
-  return game.isGameOver();
-}
-
 function findWinner(state) {
   let bestPlayer = { index: 0, score: -1, rows: 0 };
   state.players.forEach((player, index) => {
@@ -269,12 +327,46 @@ function findWinner(state) {
   return bestPlayer;
 }
 
+async function highlightLegalPlacements() {
+    try {
+        const allMoves = await game.getLegalMoves();
+        const state = await game.getState();
+        const validPlacements = allMoves.filter(move =>
+            JSON.stringify(move.source) === JSON.stringify(selectedTake.source) &&
+            move.tile === selectedTake.tile
+        );
+
+        validPlacements.forEach(move => {
+            let element;
+            if (move.destination.PatternLine !== undefined) {
+                element = document.getElementById(`p${state.current_player_idx}-row${move.destination.PatternLine}`);
+            } else {
+                element = document.getElementById(`p${state.current_player_idx}-floor`);
+            }
+            
+            if (element) {
+                element.classList.add('highlight');
+                element.addEventListener('click', () => {
+                    if (move.destination.PatternLine !== undefined) {
+                        placementClicked(move.destination.PatternLine);
+                    } else {
+                        placementClicked(5);
+                    }
+                }, { once: true });
+            }
+        });
+    } catch (error) {
+        console.error("Error highlighting moves:", error);
+    }
+}
+
+
 // --- Main Execution ---
 async function main() {
-  await init();
-  numPlayersSelect.addEventListener('change', (e) => updatePlayerOptions(e.target.value));
-  startGameBtn.addEventListener('click', startGame);
-  updatePlayerOptions(numPlayersSelect.value);
+    await init();
+    numPlayersSelect.addEventListener('change', (e) => updatePlayerOptions(e.target.value));
+    startGameBtn.addEventListener('click', startGame);
+    updatePlayerOptions(numPlayersSelect.value);
 }
 
 main();

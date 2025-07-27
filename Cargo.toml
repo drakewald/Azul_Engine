@@ -1,18 +1,44 @@
 [package]
 name = "azul-engine"
 version = "0.1.0"
-edition = "2024"
-
-[dependencies]
-rand = "0.8"
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-wasm-bindgen = { version = "0.2", features = ["serde-serialize"] }
-serde-wasm-bindgen = "0.6"
-
-# This section adds special features ONLY when compiling for a WebAssembly target
-[target.'cfg(target_arch = "wasm32")'.dependencies]
-getrandom = { version = "0.2", features = ["js"] }
+edition = "2021"
 
 [lib]
 crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+wasm-bindgen = { version = "0.2.87", features = ["serde-serialize"] }
+serde = { version = "1.0", features = ["derive"] }
+serde-wasm-bindgen = "0.4"
+# MODIFIED: Removed the incorrect feature flag from this line.
+rand = { version = "0.8.5", features = ["serde"] }
+
+# NEW: Added getrandom as a direct dependency with the "js" feature for Wasm support.
+getrandom = { version = "0.2", features = ["js"] }
+
+# Native-only dependencies are optional
+anyhow = { version = "1.0", optional = true }
+tch = { version = "0.20.0", optional = true }
+tempfile = { version = "3.10.1", optional = true }
+clap = { version = "4.0", features = ["derive"], optional = true }
+chrono = { version = "0.4", optional = true }
+rayon = { version = "1.5", optional = true }
+serde_json = { version = "1.0", optional = true }
+
+# Wasm-only dependency for console logging
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+web-sys = { version = "0.3", features = ["console"] }
+
+
+[features]
+# The "native" feature enables all dependencies not compatible with Wasm.
+native = ["anyhow", "tch", "tempfile", "clap", "chrono", "rayon", "serde_json"]
+
+# The headless and train binaries require the "native" feature to be enabled.
+[[bin]]
+name = "headless"
+required-features = ["native"]
+
+[[bin]]
+name = "train"
+required-features = ["native"]

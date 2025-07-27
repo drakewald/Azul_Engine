@@ -4,36 +4,166 @@
     <meta charset="utf-8" />
     <title>Azul in Rust</title>
     <style>
-      body { font-family: sans-serif; }
-      #setup-screen { padding: 20px; border: 1px solid #ccc; border-radius: 8px; }
-      #game-screen { display: none; flex-wrap: wrap; } /* Hidden by default */
-      .player-option { margin-bottom: 10px; }
-      #start-game-btn { margin-top: 20px; padding: 10px 20px; font-size: 1.2em; }
+      body {
+        font-family: sans-serif;
+        background-color: #f0f0f0;
+      }
+      #setup-screen {
+        padding: 20px;
+        border: 1px solid #ccc;
+        border-radius: 8px;
+        max-width: 400px;
+        margin: 40px auto;
+        background-color: white;
+      }
+      .player-option {
+        margin-bottom: 10px;
+      }
+      #start-game-btn {
+        margin-top: 20px;
+        padding: 10px 20px;
+        font-size: 1.2em;
+        cursor: pointer;
+      }
+
+      /* --- Layout Styles --- */
+      #game-screen {
+        display: none; 
+        align-items: flex-start;
+        gap: 30px;
+        padding: 20px;
+      }
+
+      #game-container {
+        flex: 0 0 320px;
+        padding: 15px;
+        border-radius: 8px;
+        background-color: white;
+        box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+      }
       
-      /* All your existing game styles go here */
-      #game-container { margin-right: 30px; }
-      #end-game-banner { width: 100%; background-color: gold; color: black; text-align: center; padding: 10px; font-size: 1.5em; font-weight: bold; box-sizing: border-box; margin-bottom: 15px; }
-      .factory, .center { margin-bottom: 10px; }
-      .player-board { border: 2px solid black; padding: 10px; margin-bottom: 20px; }
-      .board-grid { display: flex; }
-      .pattern-lines { text-align: right; margin-right: 20px;}
-      .pattern-line { margin-bottom: 5px; height: 27px; display: flex; justify-content: flex-end; }
-      .wall-grid { border-left: 1px solid #ccc; padding-left: 20px; }
-      .wall-row { margin-bottom: 5px; height: 27px; display: flex; }
-      .floor-line { margin-top: 10px; }
-      .tile { display: inline-block; width: 25px; height: 25px; border: 1px solid #555; margin-right: 5px; text-align: center; line-height: 25px; font-weight: bold; cursor: pointer; box-sizing: border-box; }
+      #players-container {
+        flex: 1;
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(500px, 1fr));
+        gap: 20px;
+      }
+      
+      /* --- Component Styles --- */
+      #end-game-banner {
+        width: 100%;
+        background-color: gold;
+        color: black;
+        text-align: center;
+        padding: 10px;
+        font-size: 1.5em;
+        font-weight: bold;
+        box-sizing: border-box;
+        margin-bottom: 15px;
+      }
+      .factory,
+      .center {
+        margin-bottom: 15px;
+        padding-bottom: 10px;
+        border-bottom: 1px solid #eee;
+        min-height: 30px;
+        transition: all 0.3s ease-in-out;
+      }
+      
+      .factory.empty {
+        opacity: 0.6;
+      }
+
+      .tile-area {
+        min-height: 35px;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 5px;
+        padding-top: 5px;
+      }
+
+      .player-board {
+        border: 1px solid #ccc;
+        border-radius: 8px;
+        padding: 15px;
+        background-color: white;
+        box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        transition: border-color 0.3s;
+      }
+      .board-grid {
+        display: flex;
+      }
+      .pattern-lines {
+        text-align: right;
+        margin-right: 20px;
+      }
+      .pattern-line {
+        margin-bottom: 5px;
+        height: 27px;
+        display: flex;
+        justify-content: flex-end;
+        border-radius: 4px;
+        padding: 2px;
+      }
+      .wall-grid {
+        border-left: 1px solid #ccc;
+        padding-left: 20px;
+      }
+      .wall-row {
+        margin-bottom: 5px;
+        height: 27px;
+        display: flex;
+      }
+      .floor-line {
+        margin-top: 10px;
+        border-top: 1px solid #eee;
+        padding-top: 10px;
+      }
+      .tile {
+        display: inline-block;
+        width: 25px;
+        height: 25px;
+        border: 1px solid #555;
+        border-radius: 4px;
+        margin-right: 5px;
+        text-align: center;
+        line-height: 25px;
+        font-weight: bold;
+        cursor: pointer;
+        box-sizing: border-box;
+        transition: transform 0.2s;
+      }
+      .tile:hover {
+        transform: scale(1.1);
+      }
       .tile.Blue { background-color: #007bff; color: white; }
       .tile.Yellow { background-color: #ffc107; color: black; }
       .tile.Red { background-color: #dc3545; color: white; }
       .tile.Black { background-color: #343a40; color: white; }
-      .tile.White { background-color: #f8f9fa; color: black; }
-      .placeholder { background-color: #e9ecef; border-style: dashed; }
-      .highlight { border: 2px solid gold; cursor: pointer; }
-      .ghost { opacity: 0.3; }
+      .tile.White { background-color: #f8f9fa; color: black; border-color: #bbb; }
+      .placeholder {
+        background-color: #e9ecef;
+        border-style: dashed;
+        cursor: default;
+      }
+      .placeholder:hover {
+        transform: none;
+      }
+      .highlight {
+        border: 2px solid gold;
+        cursor: pointer;
+        background-color: #fff3cd;
+      }
+      .ghost {
+        opacity: 0.3;
+        cursor: default;
+      }
+      .ghost:hover {
+          transform: none;
+      }
     </style>
   </head>
   <body>
-    <!-- Setup Screen (Visible on load) -->
     <div id="setup-screen">
       <h1>Game Setup</h1>
       <div class="player-option">
@@ -45,15 +175,18 @@
         </select>
       </div>
       <div id="player-options-container">
-        <!-- Player type selectors will be generated here by JS -->
+        <!-- Player options will be dynamically inserted here -->
       </div>
       <button id="start-game-btn">Start Game</button>
     </div>
 
-    <!-- Game Screen (Hidden on load) -->
     <div id="game-screen">
-      <div id="game-container"></div>
-      <div id="players-container"></div>
+      <div id="game-container">
+        <!-- Factories and Center will be rendered here -->
+      </div>
+      <div id="players-container">
+        <!-- Player boards will be rendered here -->
+      </div>
     </div>
 
     <script type="module" src="./index.js"></script>
