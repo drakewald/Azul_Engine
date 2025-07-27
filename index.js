@@ -23,7 +23,6 @@ async function render() {
     const state = await game.getState();
     if (!state) return;
 
-    // --- Banner for Final Round ---
     const existingBanner = document.getElementById('end-game-banner');
     if (existingBanner) existingBanner.remove();
     if (state.end_game_triggered && !game.isGameOver()) {
@@ -33,17 +32,13 @@ async function render() {
         document.body.prepend(banner);
     }
     
-    // --- Clear and Render Game Board ---
     gameContainer.innerHTML = '<h2>Factories</h2>';
     playersContainer.innerHTML = '';
     
-    // --- Factories ---
     state.factories.forEach((factory, factoryIndex) => {
       const factoryDiv = document.createElement('div');
       factoryDiv.className = 'factory';
-      if (factory.length === 0) {
-        factoryDiv.classList.add('empty');
-      }
+      if (factory.length === 0) factoryDiv.classList.add('empty');
       factoryDiv.innerHTML = `<strong>F${factoryIndex + 1}:</strong> `;
       factory.forEach(tile => {
         const tileDiv = document.createElement('span');
@@ -55,22 +50,18 @@ async function render() {
       gameContainer.appendChild(factoryDiv);
     });
 
-    // --- Center ---
     const centerDiv = document.createElement('div');
     centerDiv.className = 'center';
     centerDiv.innerHTML = '<h2>Center</h2>';
     const centerTileArea = document.createElement('div');
     centerTileArea.className = 'tile-area';
 
-    // --- ADDED: Logic to show the first player marker in the center ---
     if (state.first_player_marker_in_center) {
         const firstPlayerMarker = document.createElement('span');
         firstPlayerMarker.className = 'tile placeholder';
         firstPlayerMarker.innerText = '1';
-        firstPlayerMarker.style.cursor = 'default'; // Make sure it's not clickable
         centerTileArea.appendChild(firstPlayerMarker);
     }
-    // --- END OF ADDED LOGIC ---
 
     state.center.forEach(tile => {
         const tileDiv = document.createElement('span');
@@ -82,7 +73,6 @@ async function render() {
     centerDiv.appendChild(centerTileArea);
     gameContainer.appendChild(centerDiv);
     
-    // --- Player Boards ---
     state.players.forEach((player, playerIndex) => {
         const playerDiv = document.createElement('div');
         playerDiv.className = 'player-board';
@@ -103,9 +93,7 @@ async function render() {
             lineDiv.id = `p${playerIndex}-row${i}`;
             const capacity = i + 1;
             for (let j = 0; j < capacity - line.length; j++) {
-                const placeholderSpan = document.createElement('span');
-                placeholderSpan.className = 'tile placeholder';
-                lineDiv.appendChild(placeholderSpan);
+                lineDiv.appendChild(document.createElement('span')).className = 'tile placeholder';
             }
             line.forEach(tile => {
                 const tileSpan = document.createElement('span');
@@ -128,8 +116,7 @@ async function render() {
                     tileSpan.classList.add(tile);
                     tileSpan.innerText = tile.charAt(0);
                 } else {
-                    const ghostColor = WALL_LAYOUT[rowIndex][colIndex];
-                    tileSpan.classList.add(ghostColor, 'ghost');
+                    tileSpan.classList.add(WALL_LAYOUT[rowIndex][colIndex], 'ghost');
                 }
                 rowDiv.appendChild(tileSpan);
             });
@@ -140,10 +127,10 @@ async function render() {
         floorDiv.className = 'floor-line';
         floorDiv.innerHTML = '<strong>Floor:</strong> ';
         if (player.has_first_player_marker) {
-            const firstPlayerMarker = document.createElement('span');
-            firstPlayerMarker.className = 'tile placeholder';
-            firstPlayerMarker.innerText = '1';
-            floorDiv.appendChild(firstPlayerMarker);
+            const marker = document.createElement('span');
+            marker.className = 'tile placeholder';
+            marker.innerText = '1';
+            floorDiv.appendChild(marker);
         }
         player.floor_line.forEach(tile => {
             const tileSpan = document.createElement('span');
@@ -174,7 +161,6 @@ async function render() {
 // --- Game Logic Functions ---
 function tileClicked(tileColor, source) {
     if (game.isGameOver() || playerConfigs[game.getState().current_player_idx] !== 'Human') return;
-
     if (selectedTake && JSON.stringify(selectedTake.source) === JSON.stringify(source) && selectedTake.tile === tileColor) {
         selectedTake = null;
     } else {
@@ -185,8 +171,7 @@ function tileClicked(tileColor, source) {
 
 async function placementClicked(rowIndex) {
     if (!selectedTake) return;
-
-    const destination = (rowIndex < 5) ? { PatternLine: rowIndex } : { Floor: null };
+    const destination = (rowIndex < 5) ? { PatternLine: rowIndex } : 'Floor';
     const move = { ...selectedTake, destination };
 
     try {
@@ -195,7 +180,6 @@ async function placementClicked(rowIndex) {
         await handleEndOfTurn();
     } catch (error) {
         console.error("Error applying move:", error);
-        alert(`An error occurred: ${error}`);
         selectedTake = null;
         render();
     }
@@ -235,12 +219,10 @@ function checkForAIMove() {
             document.body.style.pointerEvents = 'none';
             setTimeout(async () => {
                 try {
-                    console.log(`--- Running ${currentPlayerType} for Player ${state.current_player_idx + 1} ---`);
                     await game.runAiTurn();
                     await handleEndOfTurn();
                 } catch(aiError) {
                     console.error("AI Error:", aiError);
-                    alert(`AI failed to make a move: ${aiError}`);
                 } finally {
                     document.body.style.pointerEvents = 'auto';
                 }
@@ -263,7 +245,8 @@ function updatePlayerOptions(numPlayers) {
         <option value="Human" ${i === 0 ? 'selected' : ''}>Human</option>
         <option value="SimpleAI">Simple AI</option>
         <option value="HeuristicAI">Heuristic AI</option>
-        <option value="MctsAI" ${i !== 0 ? 'selected' : ''}>MCTS AI</option>
+        <option value="MctsAI">MCTS Heuristic AI</option>
+        <option value="MctsNnAI" ${i !== 0 ? 'selected' : ''}>MCTS NN AI (Release Model)</option>
       </select>
     `;
     playerOptionsContainer.appendChild(div);
@@ -275,16 +258,10 @@ async function startGame() {
   
   playerConfigs = [];
   const playerTypesForWasm = [];
+  let needsModel = false;
 
   for (let i = 0; i < numPlayers; i++) {
     const selectElement = document.getElementById(`player-type-${i}`);
-    
-    if (!selectElement) {
-        console.error(`Could not find player type selector for player ${i + 1}`);
-        alert("A UI error occurred. Please refresh the page.");
-        return;
-    }
-    
     const playerType = selectElement.value;
     playerConfigs.push(playerType);
     
@@ -292,10 +269,35 @@ async function startGame() {
     if (playerType === 'SimpleAI') playerTypesForWasm.push(1);
     if (playerType === 'HeuristicAI') playerTypesForWasm.push(2);
     if (playerType === 'MctsAI') playerTypesForWasm.push(3);
+    if (playerType === 'MctsNnAI') {
+        playerTypesForWasm.push(4);
+        needsModel = true;
+    }
+  }
+
+  let modelBytes = null;
+  if (needsModel) {
+      // MODIFIED: Always fetch the single release model.
+      const modelPath = 'release_models/azul_alpha.ot';
+      console.log(`Fetching release model: ${modelPath}`);
+      try {
+          const response = await fetch(modelPath);
+          if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+          const buffer = await response.arrayBuffer();
+          modelBytes = new Uint8Array(buffer);
+      } catch (error) {
+          console.error("Failed to fetch the model:", error);
+          alert("Could not fetch the release AI model. Please ensure a trained model exists in the 'release_models' directory and the server is running correctly.");
+          return;
+      }
   }
 
   try {
-    game = new WasmGame(playerTypesForWasm);
+    const gameConfig = {
+        player_types: playerTypesForWasm,
+        model_bytes: modelBytes,
+    };
+    game = new WasmGame(gameConfig);
     WALL_LAYOUT = await game.getWallLayout();
 
     setupScreen.style.display = 'none';

@@ -6,6 +6,7 @@ use crate::{
     },
     GameState, Move,
 };
+use std::any::Any;
 use std::collections::HashMap;
 
 #[derive(Clone)]
@@ -77,5 +78,9 @@ impl AIAgent for MctsHeuristicAI {
         
         mcts.run_search(self.iterations);
         mcts.best_move()
+    }
+
+    fn as_any(&mut self) -> &mut dyn Any {
+        self
     }
 }

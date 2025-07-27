@@ -42,7 +42,6 @@
         box-shadow: 0 2px 5px rgba(0,0,0,0.1);
       }
       
-      /* MODIFIED: This is now a responsive grid container. */
       #players-container {
         flex: 1;
         display: grid;
@@ -176,15 +175,18 @@
         </select>
       </div>
       <div id="player-options-container">
-        </div>
+        <!-- Player options will be dynamically inserted here -->
+      </div>
       <button id="start-game-btn">Start Game</button>
     </div>
 
     <div id="game-screen">
       <div id="game-container">
-        </div>
+        <!-- Factories and Center will be rendered here -->
+      </div>
       <div id="players-container">
-        </div>
+        <!-- Player boards will be rendered here -->
+      </div>
     </div>
 
     <script type="module" src="./index.js"></script>

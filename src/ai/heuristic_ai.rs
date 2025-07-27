@@ -1,6 +1,7 @@
 use crate::{
     ai::AIAgent, GameState, Move, MoveDestination, MoveSource, PlayerBoard, Tile, WALL_LAYOUT,
 };
+use std::any::Any;
 
 /// An AI that uses a series of prioritized, rule-based heuristics to select a move.
 /// It plays strategically but does not look ahead more than one turn.
@@ -37,6 +38,10 @@ impl AIAgent for HeuristicAI {
 
         // Main Heuristic: Find the best general-purpose move
         find_best_general_move(game_state, &legal_moves)
+    }
+
+    fn as_any(&mut self) -> &mut dyn Any {
+        self
     }
 }
 
