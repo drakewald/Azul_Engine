@@ -150,7 +150,7 @@ fn run_self_play(cli: Cli) -> std::io::Result<()> {
         fs::create_dir_all(training_models_dir)?;
         let latest_model = fs::read_dir(training_models_dir)?
             .filter_map(Result::ok)
-            .filter(|e| e.path().extension().map_or(false, |ext| ext == "ot"))
+            .filter(|e| e.path().extension().map_or(false, |ext| ext == "safetensors"))
             .max_by_key(|entry| entry.metadata().unwrap().created().unwrap());
 
         if let Some(entry) = latest_model {
@@ -171,7 +171,14 @@ fn run_self_play(cli: Cli) -> std::io::Result<()> {
         .into_par_iter()
         .flat_map(|_| {
             let mut agents: Vec<Box<dyn AIAgent>> = (0..num_players)
-                .map(|_| create_agent(&agent_config))
+                .map(|_| {
+                    let mut agent = create_agent(&agent_config);
+                    // Enable temperature sampling and Dirichlet noise for self-play.
+                    if let Some(nn) = agent.as_any().downcast_mut::<MctsNnAI>() {
+                        nn.set_training_mode();
+                    }
+                    agent
+                })
                 .collect();
             run_one_self_play_game(&mut agents)
         })

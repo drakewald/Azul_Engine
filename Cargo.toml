@@ -12,14 +12,15 @@ serde = { version = "1.0", features = ["derive"] }
 serde-wasm-bindgen = "0.4"
 # MODIFIED: Removed the incorrect feature flag from this line.
 rand = { version = "0.8.5", features = ["serde"] }
+rand_distr = "0.4"
 
 # NEW: Added getrandom as a direct dependency with the "js" feature for Wasm support.
 getrandom = { version = "0.2", features = ["js"] }
 
 # Native-only dependencies are optional
 anyhow = { version = "1.0", optional = true }
-tch = { version = "0.20.0", optional = true }
-tempfile = { version = "3.10.1", optional = true }
+candle-core = { version = "0.8", optional = true }
+candle-nn = { version = "0.8", optional = true }
 clap = { version = "4.0", features = ["derive"], optional = true }
 chrono = { version = "0.4", optional = true }
 rayon = { version = "1.5", optional = true }
@@ -32,7 +33,7 @@ web-sys = { version = "0.3", features = ["console"] }
 
 [features]
 # The "native" feature enables all dependencies not compatible with Wasm.
-native = ["anyhow", "tch", "tempfile", "clap", "chrono", "rayon", "serde_json"]
+native = ["anyhow", "candle-core", "candle-nn", "clap", "chrono", "rayon", "serde_json"]
 
 # The headless and train binaries require the "native" feature to be enabled.
 [[bin]]

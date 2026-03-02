@@ -69,7 +69,7 @@ impl MctsHeuristicAI {
 impl AIAgent for MctsHeuristicAI {
     fn get_move(&mut self, game_state: &GameState) -> Option<Move> {
         if self.mcts.is_none() {
-            self.mcts = Some(Mcts::new(game_state.clone(), HeuristicPolicy));
+            self.mcts = Some(Mcts::new(game_state.clone(), HeuristicPolicy, false));
         }
 
         let mcts = self.mcts.as_mut().unwrap();

@@ -1,18 +1,19 @@
-// MODIFIED: This entire module will only be compiled when the "native" feature is enabled.
+// This entire module will only be compiled when the "native" feature is enabled.
 #![cfg(feature = "native")]
 
 use crate::{
     ai::{
         mcts_lib::{Mcts, MctsPolicy},
-        nn::NeuralNetwork,
+        nn::{AzulNet, INPUT_SIZE, POLICY_SIZE},
         AIAgent,
     },
     GameState, Move, MoveSource, Tile,
 };
 use std::any::Any;
 use std::collections::HashMap;
+use std::rc::Rc;
 
-// --- Constants for Network Architecture ---
+// --- Constants used only for state encoding ---
 const NUM_FACTORIES: usize = 9;
 const NUM_COLORS: usize = 5;
 const MAX_CENTER_TILES: usize = 27;
@@ -20,12 +21,6 @@ const MAX_PLAYERS: usize = 4;
 const PATTERN_LINE_SLOTS: usize = 5 * 5;
 const WALL_SLOTS: usize = 5 * 5;
 const FLOOR_SLOTS: usize = 7;
-
-const INPUT_SIZE: usize = (NUM_FACTORIES * NUM_COLORS * 4)
-                        + (MAX_CENTER_TILES * NUM_COLORS)
-                        + (MAX_PLAYERS * (1 + PATTERN_LINE_SLOTS + WALL_SLOTS + FLOOR_SLOTS + 1))
-                        + 1;
-const POLICY_SIZE: usize = (NUM_FACTORIES * NUM_COLORS) + NUM_COLORS;
 
 // --- Helper Functions ---
 fn color_to_index(tile: Tile) -> usize {
@@ -43,19 +38,18 @@ fn move_to_policy_index(move_tile: Tile, move_source: &MoveSource) -> Option<usi
     }
 }
 
+// Rc gives cheap Clone (ref-count increment) without requiring AzulNet: Sync.
 #[derive(Clone)]
 struct NnPolicy {
-    nn: NeuralNetwork,
+    net: Rc<AzulNet>,
 }
 
 impl MctsPolicy for NnPolicy {
     fn evaluate(&self, game_state: &GameState) -> (f32, HashMap<Move, f32>) {
         let input = self.state_to_input(game_state);
-        let nn_output = self.nn.forward(&input);
-        let value = *nn_output.last().unwrap_or(&0.0);
-        let raw_policy = &nn_output[..POLICY_SIZE];
+        let (raw_policy, value) = self.net.forward(&input);
         let legal_moves = game_state.get_legal_moves();
-        let policy_map = self.mask_and_normalize_policy(&legal_moves, raw_policy);
+        let policy_map = self.mask_and_normalize_policy(&legal_moves, &raw_policy);
         (value, policy_map)
     }
 }
@@ -141,11 +135,21 @@ pub struct MctsNnAI {
     iterations: u32,
     model_path: Option<String>,
     model_bytes: Option<Vec<u8>>,
+    /// Temperature for move selection (0.0 = greedy, 1.0 = proportional to visit counts).
+    temperature: f32,
+    /// Whether to inject Dirichlet noise at the root (should be true during self-play only).
+    add_noise: bool,
 }
 
 impl MctsNnAI {
     pub fn new(iterations: u32, model_path: Option<String>, model_bytes: Option<Vec<u8>>) -> Self {
-        Self { mcts: None, iterations, model_path, model_bytes }
+        Self { mcts: None, iterations, model_path, model_bytes, temperature: 0.0, add_noise: false }
+    }
+
+    /// Switch to training mode: enables temperature sampling and Dirichlet root noise.
+    pub fn set_training_mode(&mut self) {
+        self.temperature = 1.0;
+        self.add_noise = true;
     }
 
     pub fn get_mcts_policy(&self) -> Option<Vec<f32>> {
@@ -172,29 +176,28 @@ impl MctsNnAI {
 impl AIAgent for MctsNnAI {
     fn get_move(&mut self, game_state: &GameState) -> Option<Move> {
         if self.mcts.is_none() {
-            let hidden_size = 256;
-            let value_size = 1;
-            
-            let nn = if let Some(bytes) = &self.model_bytes {
-                NeuralNetwork::from_bytes(bytes).unwrap_or_else(|e| {
-                    println!("Failed to load model from bytes: {}, creating new.", e);
-                    NeuralNetwork::new(&[INPUT_SIZE, hidden_size, POLICY_SIZE + value_size])
+            let net = if let Some(bytes) = &self.model_bytes {
+                AzulNet::load_from_bytes(bytes).unwrap_or_else(|e| {
+                    println!("Failed to load model from bytes: {}, using random weights.", e);
+                    AzulNet::new_random()
                 })
             } else if let Some(path) = &self.model_path {
-                println!("Attempting to load model from path: {} (placeholder)", path);
-                NeuralNetwork::new(&[INPUT_SIZE, hidden_size, POLICY_SIZE + value_size])
+                AzulNet::load_from_path(path).unwrap_or_else(|e| {
+                    println!("Failed to load model from '{}': {}, using random weights.", path, e);
+                    AzulNet::new_random()
+                })
             } else {
-                NeuralNetwork::new(&[INPUT_SIZE, hidden_size, POLICY_SIZE + value_size])
+                AzulNet::new_random()
             };
 
-            let policy_handler = NnPolicy { nn };
-            self.mcts = Some(Mcts::new(game_state.clone(), policy_handler));
+            let policy_handler = NnPolicy { net: Rc::new(net) };
+            self.mcts = Some(Mcts::new(game_state.clone(), policy_handler, self.add_noise));
         }
 
         let mcts = self.mcts.as_mut().unwrap();
         mcts.sync_tree_with_state(game_state);
         mcts.run_search(self.iterations);
-        mcts.best_move()
+        mcts.sample_move(self.temperature)
     }
 
     fn as_any(&mut self) -> &mut dyn Any { self }

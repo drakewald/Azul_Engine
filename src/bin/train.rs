@@ -1,96 +1,164 @@
+use azul_engine::ai::{mcts_nn_ai::MctsNnAI, AIAgent};
+use azul_engine::ai::nn::{INPUT_SIZE, POLICY_SIZE};
 use azul_engine::TrainingData;
+use azul_engine::GameState;
+use candle_core::{DType, Device, Tensor};
+use candle_nn::{linear, loss, ops, Linear, Module, Optimizer, VarBuilder, VarMap};
+use candle_nn::optim::{AdamW, ParamsAdamW};
+use rand::seq::SliceRandom;
+use rayon::prelude::*;
 use serde_json;
 use std::fs;
 use std::fs::File;
 use std::io::BufReader;
-use tch::{nn, Device, Tensor, nn::OptimizerConfig};
 
-// --- Network Architecture Constants ---
-const NUM_FACTORIES: usize = 9;
-const NUM_COLORS: usize = 5;
-const MAX_CENTER_TILES: usize = 27;
-const MAX_PLAYERS: usize = 4;
-const PATTERN_LINE_SLOTS: usize = 5 * 5;
-const WALL_SLOTS: usize = 5 * 5;
-const FLOOR_SLOTS: usize = 7;
+const HIDDEN_SIZE: usize = 256;
+/// Number of most-recent data files included in each training run.
+const REPLAY_BUFFER_FILES: usize = 5;
+/// Weight applied to policy loss relative to value loss.
+const POLICY_LOSS_WEIGHT: f64 = 1.0;
+/// Evaluation games run between new and old model after training.
+const EVAL_GAMES: u32 = 300;
+/// Minimum new-model win rate required to deploy to release_models/.
+const WIN_RATE_THRESHOLD: f64 = 0.55;
+/// MCTS iterations used during evaluation games.
+const EVAL_MCTS_ITERS: u32 = 200;
 
-const INPUT_SIZE: usize = (NUM_FACTORIES * NUM_COLORS * 4)
-                        + (MAX_CENTER_TILES * NUM_COLORS)
-                        + (MAX_PLAYERS * (1 + PATTERN_LINE_SLOTS + WALL_SLOTS + FLOOR_SLOTS + 1))
-                        + 1;
-const POLICY_SIZE: usize = (NUM_FACTORIES * NUM_COLORS) + NUM_COLORS;
-
-
-#[derive(Debug)]
 struct Net {
-    fc1: nn::Linear,
-    fc2: nn::Linear,
-    policy_head: nn::Linear,
-    value_head: nn::Linear,
+    fc1: Linear,
+    fc2: Linear,
+    policy_head: Linear,
+    value_head: Linear,
 }
 
 impl Net {
-    fn new(vs: &nn::Path) -> Self {
-        let hidden_size = 256;
-        let fc1 = nn::linear(vs / "fc1", INPUT_SIZE as i64, hidden_size, Default::default());
-        let fc2 = nn::linear(vs / "fc2", hidden_size, hidden_size, Default::default());
-        let policy_head = nn::linear(vs / "policy_head", hidden_size, POLICY_SIZE as i64, Default::default());
-        let value_head = nn::linear(vs / "value_head", hidden_size, 1, Default::default());
-        Self { fc1, fc2, policy_head, value_head }
+    fn new(vb: VarBuilder) -> candle_core::Result<Self> {
+        let fc1 = linear(INPUT_SIZE, HIDDEN_SIZE, vb.pp("fc1"))?;
+        let fc2 = linear(HIDDEN_SIZE, HIDDEN_SIZE, vb.pp("fc2"))?;
+        let policy_head = linear(HIDDEN_SIZE, POLICY_SIZE, vb.pp("policy_head"))?;
+        let value_head = linear(HIDDEN_SIZE, 1, vb.pp("value_head"))?;
+        Ok(Self { fc1, fc2, policy_head, value_head })
     }
 
-    fn forward(&self, xs: &Tensor) -> (Tensor, Tensor) {
-        let xs = xs.apply(&self.fc1).relu().apply(&self.fc2).relu();
-        let policy = xs.apply(&self.policy_head);
-        let value = xs.apply(&self.value_head).tanh();
-        (policy, value)
+    fn forward(&self, xs: &Tensor) -> candle_core::Result<(Tensor, Tensor)> {
+        let h = self.fc1.forward(xs)?.relu()?;
+        let h = self.fc2.forward(&h)?.relu()?;
+        let policy = self.policy_head.forward(&h)?;
+        let value = self.value_head.forward(&h)?.tanh()?;
+        Ok((policy, value))
+    }
+}
+
+/// Determine the winner using score, then complete rows as a tiebreaker.
+/// Returns `None` on a genuine tie (both metrics equal), matching `headless.rs`.
+fn determine_winner(game: &GameState) -> Option<usize> {
+    let best = game.players.iter().enumerate().max_by(|(_, a), (_, b)| {
+        a.score.cmp(&b.score).then(a.count_complete_rows().cmp(&b.count_complete_rows()))
+    });
+    let (winner_idx, winner) = best?;
+    let is_tie = game.players.iter().any(|p| {
+        p != winner
+            && p.score == winner.score
+            && p.count_complete_rows() == winner.count_complete_rows()
+    });
+    if is_tie { None } else { Some(winner_idx) }
+}
+
+/// Play one 2-player game between `new_path` and `old_path` models.
+/// Returns 1.0 (new wins), 0.5 (tie), or 0.0 (new loses).
+fn run_eval_game(new_path: &str, old_path: &str, new_goes_first: bool) -> f32 {
+    let (p0_path, p1_path) = if new_goes_first {
+        (new_path, old_path)
+    } else {
+        (old_path, new_path)
+    };
+    let mut agents: Vec<Box<dyn AIAgent>> = vec![
+        Box::new(MctsNnAI::new(EVAL_MCTS_ITERS, Some(p0_path.to_string()), None)),
+        Box::new(MctsNnAI::new(EVAL_MCTS_ITERS, Some(p1_path.to_string()), None)),
+    ];
+    let mut game = GameState::new(2);
+    while !game.end_game_triggered {
+        while !game.is_round_over() {
+            let idx = game.current_player_idx;
+            if let Some(mv) = agents[idx].get_move(&game) {
+                game.apply_move(&mv);
+            } else {
+                break;
+            }
+        }
+        game.run_tiling_phase();
+        if !game.end_game_triggered {
+            game.refill_factories();
+        }
+    }
+    game.apply_end_game_scoring();
+    let new_player_idx = if new_goes_first { 0 } else { 1 };
+    match determine_winner(&game) {
+        Some(w) if w == new_player_idx => 1.0,
+        None => 0.5,
+        _ => 0.0,
     }
 }
 
 fn main() -> anyhow::Result<()> {
-    // --- 1. Load Data ---
+    // --- 1. Load Data (rolling replay buffer: last N files) ---
     let data_dir = "training_data";
     fs::create_dir_all(data_dir)?;
 
-    let latest_data_file = fs::read_dir(data_dir)?
+    let mut data_files: Vec<_> = fs::read_dir(data_dir)?
         .filter_map(Result::ok)
-        .max_by_key(|entry| entry.metadata().unwrap().created().unwrap());
+        .filter(|e| e.path().extension().map_or(false, |ext| ext == "json"))
+        .collect();
+    data_files.sort_by_key(|e| e.metadata().unwrap().created().unwrap());
 
-    let data: Vec<TrainingData> = if let Some(entry) = latest_data_file {
-        let path = entry.path();
-        println!("Loading latest data file: {:?}", path);
-        let file = File::open(path)?;
-        let reader = BufReader::new(file);
-        serde_json::from_reader(reader)?
-    } else {
-        Vec::new()
-    };
-    
-    println!("Loaded {} training samples.", data.len());
+    let mut data: Vec<TrainingData> = data_files
+        .iter()
+        .rev()
+        .take(REPLAY_BUFFER_FILES)
+        .flat_map(|entry| {
+            println!("Loading data file: {:?}", entry.path());
+            let file = File::open(entry.path()).expect("failed to open data file");
+            let reader = BufReader::new(file);
+            let samples: Vec<TrainingData> =
+                serde_json::from_reader(reader).unwrap_or_default();
+            samples
+        })
+        .collect();
+
+    println!(
+        "Loaded {} training samples from up to {} file(s).",
+        data.len(),
+        REPLAY_BUFFER_FILES
+    );
 
     if data.is_empty() {
         println!("No training data found. Run headless in --self-play mode to generate data.");
         return Ok(());
     }
 
-    // --- 2. Set up Model and Optimizer ---
-    let mut vs = nn::VarStore::new(Device::Cpu);
-    let net = Net::new(&vs.root());
+    // Shuffle to break temporal correlation between batches.
+    data.shuffle(&mut rand::thread_rng());
 
-    // --- MODIFIED SECTION: Fine-tuning Logic ---
+    // --- 2. Set up Model ---
+    let device = Device::Cpu;
+    let mut varmap = VarMap::new();
+
     let training_models_dir = "training_models";
     fs::create_dir_all(training_models_dir)?;
 
     let latest_model = fs::read_dir(training_models_dir)?
         .filter_map(Result::ok)
-        .filter(|e| e.path().extension().map_or(false, |ext| ext == "ot"))
+        .filter(|e| e.path().extension().map_or(false, |ext| ext == "safetensors"))
         .max_by_key(|entry| entry.metadata().unwrap().created().unwrap());
 
     let mut next_version = 1;
+    let mut old_model_path: Option<String> = None;
+
     if let Some(entry) = latest_model {
         let path = entry.path();
         println!("Loading model for fine-tuning: {:?}", path);
-        vs.load(&path)?;
+        old_model_path = Some(path.to_string_lossy().to_string());
+        varmap.load(&path)?;
 
         if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
             if let Some(version_str) = stem.strip_prefix("azul_model_v") {
@@ -100,11 +168,18 @@ fn main() -> anyhow::Result<()> {
             }
         }
     } else {
-        println!("No existing model found in 'training_models/'. Training a new model (v1) from scratch.");
+        println!(
+            "No existing model found in 'training_models/'. Training a new model (v1) from scratch."
+        );
     }
-    // --- END MODIFIED SECTION ---
 
-    let mut opt = nn::Adam::default().build(&vs, 1e-4)?;
+    let vb = VarBuilder::from_varmap(&varmap, DType::F32, &device);
+    let net = Net::new(vb)?;
+
+    let mut opt = AdamW::new(
+        varmap.all_vars(),
+        ParamsAdamW { lr: 1e-4, weight_decay: 0.0, ..Default::default() },
+    )?;
 
     // --- 3. Training Loop ---
     let epochs = 10;
@@ -112,47 +187,90 @@ fn main() -> anyhow::Result<()> {
     println!("Starting training for {} epochs...", epochs);
 
     for epoch in 1..=epochs {
-        // In a real implementation, you would shuffle the data here.
         for batch_start in (0..data.len()).step_by(batch_size) {
             let batch_end = (batch_start + batch_size).min(data.len());
-            if batch_start >= batch_end { continue; }
+            if batch_start >= batch_end {
+                continue;
+            }
             let batch = &data[batch_start..batch_end];
+            let n = batch.len();
 
-            let states: Vec<Tensor> = batch.iter().map(|d| Tensor::from_slice(&d.state_input)).collect();
-            let policies: Vec<Tensor> = batch.iter().map(|d| Tensor::from_slice(&d.mcts_policy)).collect();
-            let outcomes: Vec<Tensor> = batch.iter().map(|d| Tensor::from_slice(&[d.outcome])).collect();
+            let mut state_flat = Vec::with_capacity(n * INPUT_SIZE);
+            let mut policy_flat = Vec::with_capacity(n * POLICY_SIZE);
+            let mut outcome_flat = Vec::with_capacity(n);
+            for d in batch {
+                state_flat.extend_from_slice(&d.state_input);
+                policy_flat.extend_from_slice(&d.mcts_policy);
+                outcome_flat.push(d.outcome);
+            }
 
-            let state_tensor = Tensor::stack(&states, 0).to_device(vs.device());
-            let policy_tensor = Tensor::stack(&policies, 0).to_device(vs.device());
-            let outcome_tensor = Tensor::stack(&outcomes, 0).to_device(vs.device());
+            let state_t = Tensor::from_slice(&state_flat, (n, INPUT_SIZE), &device)?;
+            let policy_t = Tensor::from_slice(&policy_flat, (n, POLICY_SIZE), &device)?;
+            let outcome_t = Tensor::from_slice(&outcome_flat, (n, 1), &device)?;
 
-            let (policy_logits, value_pred) = net.forward(&state_tensor);
+            let (policy_logits, value_pred) = net.forward(&state_t)?;
 
-            let value_loss = value_pred.mse_loss(&outcome_tensor, tch::Reduction::Mean);
-            let policy_loss = policy_logits.mse_loss(&policy_tensor, tch::Reduction::Mean);
-            let total_loss = value_loss + policy_loss;
+            let value_loss = loss::mse(&value_pred, &outcome_t)?;
 
-            opt.zero_grad();
-            total_loss.backward();
-            opt.step();
+            // Soft cross-entropy: -sum(target * log_softmax(logits)) / batch
+            let log_probs = ops::log_softmax(&policy_logits, 1)?;
+            let policy_loss = policy_t.mul(&log_probs)?.mean_all()?.neg()?;
+
+            let total_loss = (value_loss + (policy_loss * POLICY_LOSS_WEIGHT)?)?;
+
+            opt.backward_step(&total_loss)?;
         }
         println!("Epoch {} complete.", epoch);
     }
 
-    // --- 4. Save Model ---
+    // --- 4. Save New Model ---
     let release_models_dir = "release_models";
     fs::create_dir_all(release_models_dir)?;
 
-    let new_training_model_path = format!("{}/azul_model_v{}.ot", training_models_dir, next_version);
-    let release_model_path = format!("{}/azul_alpha.ot", release_models_dir);
+    let new_training_model_path = format!(
+        "{}/azul_model_v{}.safetensors",
+        training_models_dir, next_version
+    );
+    varmap.save(&new_training_model_path)?;
+    println!("Saved new model to '{}'", new_training_model_path);
 
-    // Save the new versioned model for continued training.
-    vs.save(&new_training_model_path)?;
-    println!("Training complete. New version saved to '{}'", new_training_model_path);
+    // --- 5. Evaluate and Gate Deployment ---
+    let release_model_path = format!("{}/azul_alpha.safetensors", release_models_dir);
 
-    // Save a copy to the release directory for the web app.
-    vs.save(&release_model_path)?;
-    println!("Model deployed for release to '{}'", release_model_path);
+    let deploy = if let Some(ref old_path) = old_model_path {
+        println!(
+            "\nEvaluating new model vs previous ({} games, {} MCTS iters)...",
+            EVAL_GAMES, EVAL_MCTS_ITERS
+        );
+        let new_path = new_training_model_path.clone();
+        let old_path = old_path.clone();
+        let (wins, ties): (u32, u32) = (0..EVAL_GAMES)
+            .into_par_iter()
+            .map(|i| {
+                let r = run_eval_game(&new_path, &old_path, i % 2 == 0);
+                (if r == 1.0 { 1u32 } else { 0 }, if r == 0.5 { 1u32 } else { 0 })
+            })
+            .reduce(|| (0, 0), |(w1, t1), (w2, t2)| (w1 + w2, t1 + t2));
+        let losses = EVAL_GAMES - wins - ties;
+        let win_rate = (wins as f64 + ties as f64 * 0.5) / EVAL_GAMES as f64;
+        println!(
+            "New model: {} W / {} D / {} L — {:.1}% adjusted win rate (threshold {:.0}%)",
+            wins, ties, losses, win_rate * 100.0, WIN_RATE_THRESHOLD * 100.0
+        );
+        win_rate >= WIN_RATE_THRESHOLD
+    } else {
+        true // First model ever — always deploy.
+    };
+
+    if deploy {
+        varmap.save(&release_model_path)?;
+        println!("Model deployed for release to '{}'", release_model_path);
+    } else {
+        println!(
+            "New model did not reach the {:.0}% win-rate threshold. Not deployed.",
+            WIN_RATE_THRESHOLD * 100.0
+        );
+    }
 
     Ok(())
 }
