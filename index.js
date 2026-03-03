@@ -280,7 +280,7 @@ async function startGame() {
   let modelBytes = null;
   if (needsModel) {
       // MODIFIED: Always fetch the single release model.
-      const modelPath = 'release_models/azul_alpha.ot';
+      const modelPath = 'release_models/azul_alpha.safetensors';
       console.log(`Fetching release model: ${modelPath}`);
       try {
           const response = await fetch(modelPath);

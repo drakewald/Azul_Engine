@@ -9,10 +9,7 @@ pub mod convergence_ai;
 pub mod human_agent;
 pub mod mcts_lib;
 
-// These modules will only be compiled when the "native" feature is enabled.
-#[cfg(feature = "native")]
 pub mod nn;
-#[cfg(feature = "native")]
 pub mod mcts_nn_ai;
 
 

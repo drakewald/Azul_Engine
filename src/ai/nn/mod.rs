@@ -1,5 +1,3 @@
-#![cfg(feature = "native")]
-
 use candle_core::Tensor;
 use candle_nn::{layer_norm, linear, LayerNorm, Linear, Module, VarBuilder};
 

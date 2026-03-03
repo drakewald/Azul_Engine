@@ -15,8 +15,6 @@ use ai::{
     simple_ai::SimpleAI,
     AIAgent
 };
-// Conditionally import the MctsNnAI only when the "native" feature is enabled.
-#[cfg(feature = "native")]
 use ai::mcts_nn_ai::MctsNnAI;
 
 
@@ -466,20 +464,14 @@ impl WasmGame {
 
         let initial_state = GameState::new(num_players);
         
+        let model_bytes = config.model_bytes;
         let agents: Vec<Box<dyn AIAgent>> = config.player_types.into_iter().map(|n| -> Box<dyn AIAgent> {
             match n {
                 0 => Box::new(HumanAgent),
                 1 => Box::new(SimpleAI),
                 2 => Box::new(HeuristicAI),
                 3 => Box::new(ConvergenceAI::default()),
-                4 => {
-                    // This code will only be included when compiling for Wasm.
-                    #[cfg(target_arch = "wasm32")]
-                    {
-                        web_sys::console::warn_1(&"MctsNnAI is not available in WebAssembly. Falling back to SimpleAI.".into());
-                    }
-                    Box::new(SimpleAI)
-                },
+                4 => Box::new(MctsNnAI::new(200, None, model_bytes.clone())),
                 5 => Box::new(GreedyAI),
                 _ => Box::new(HumanAgent),
             }

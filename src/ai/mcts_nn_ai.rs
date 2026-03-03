@@ -1,15 +1,13 @@
-// This entire module will only be compiled when the "native" feature is enabled.
-#![cfg(feature = "native")]
-
 use crate::{
     ai::{
         mcts_lib::{Mcts, MctsPolicy},
         nn::{AzulNetwork, TacticianConfig, TacticianNet, INPUT_SIZE, POLICY_SIZE},
         AIAgent,
     },
-    config::HardwareConfig,
     GameState, Move, MoveSource, Tile,
 };
+#[cfg(feature = "native")]
+use crate::config::HardwareConfig;
 use rustc_hash::{FxHashMap, FxHasher};
 use std::any::Any;
 use std::cell::RefCell;
@@ -205,11 +203,14 @@ pub struct MctsNnAI {
 
 impl MctsNnAI {
     pub fn new(iterations: u32, model_path: Option<String>, model_bytes: Option<Vec<u8>>) -> Self {
-        let hw = HardwareConfig::load();
+        #[cfg(feature = "native")]
+        let batch_size = HardwareConfig::load().mcts_batch_size;
+        #[cfg(not(feature = "native"))]
+        let batch_size = 1usize;
         Self {
             mcts: None, iterations, model_path, model_bytes,
             temperature: 0.0, add_noise: false,
-            batch_size: hw.mcts_batch_size,
+            batch_size,
         }
     }
 

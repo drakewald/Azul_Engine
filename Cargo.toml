@@ -17,26 +17,30 @@ rand_distr = "0.4"
 # NEW: Added getrandom as a direct dependency with the "js" feature for Wasm support.
 getrandom = { version = "0.2", features = ["js"] }
 
+# Pure-Rust deps available in all builds (including Wasm)
+anyhow = { version = "1.0" }
+candle-core = { version = "0.8" }
+candle-nn = { version = "0.8" }
+rustc-hash = { version = "1.1" }
+
 # Native-only dependencies are optional
-anyhow = { version = "1.0", optional = true }
-candle-core = { version = "0.8", optional = true }
-candle-nn = { version = "0.8", optional = true }
 clap = { version = "4.0", features = ["derive"], optional = true }
 chrono = { version = "0.4", optional = true }
 rayon = { version = "1.5", optional = true }
 serde_json = { version = "1.0", optional = true }
 zstd = { version = "0.13", optional = true }
-rustc-hash = { version = "1.1", optional = true }
 smallvec = { version = "1.11", optional = true }
 
-# Wasm-only dependency for console logging
+# Wasm-only dependencies
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 web-sys = { version = "0.3", features = ["console"] }
+# Force the wasm_js feature on getrandom 0.3 (pulled in transitively by candle-core)
+getrandom = { version = "0.3", features = ["wasm_js"] }
 
 
 [features]
 # The "native" feature enables all dependencies not compatible with Wasm.
-native = ["anyhow", "candle-core", "candle-nn", "clap", "chrono", "rayon", "serde_json", "zstd", "rustc-hash", "smallvec"]
+native = ["clap", "chrono", "rayon", "serde_json", "zstd", "smallvec"]
 
 # The headless and train binaries require the "native" feature to be enabled.
 [[bin]]
