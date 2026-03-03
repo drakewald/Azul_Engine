@@ -4,13 +4,16 @@
 use crate::{
     ai::{
         mcts_lib::{Mcts, MctsPolicy},
-        nn::{AzulNet, INPUT_SIZE, POLICY_SIZE},
+        nn::{AzulNetwork, TacticianConfig, TacticianNet, INPUT_SIZE, POLICY_SIZE},
         AIAgent,
     },
+    config::HardwareConfig,
     GameState, Move, MoveSource, Tile,
 };
+use rustc_hash::{FxHashMap, FxHasher};
 use std::any::Any;
-use std::collections::HashMap;
+use std::cell::RefCell;
+use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 
 // --- Constants used only for state encoding ---
@@ -38,19 +41,77 @@ fn move_to_policy_index(move_tile: Tile, move_source: &MoveSource) -> Option<usi
     }
 }
 
-// Rc gives cheap Clone (ref-count increment) without requiring AzulNet: Sync.
+fn hash_vec_f32(v: &[f32]) -> u64 {
+    let mut h = FxHasher::default();
+    for &f in v { f.to_bits().hash(&mut h); }
+    h.finish()
+}
+
+// Rc gives cheap Clone (ref-count increment) without requiring AzulNetwork: Sync.
+// The transposition table is shared across clones (e.g. after sync_tree_with_state).
 #[derive(Clone)]
 struct NnPolicy {
-    net: Rc<AzulNet>,
+    net: Rc<dyn AzulNetwork>,
+    transposition_table: Rc<RefCell<FxHashMap<u64, (f32, Vec<f32>)>>>,
 }
 
 impl MctsPolicy for NnPolicy {
-    fn evaluate(&self, game_state: &GameState) -> (f32, HashMap<Move, f32>) {
+    fn evaluate(&self, game_state: &GameState) -> (f32, Vec<(Move, f32)>) {
         let input = self.state_to_input(game_state);
-        let (raw_policy, value) = self.net.forward(&input);
+        let hash = hash_vec_f32(&input);
         let legal_moves = game_state.get_legal_moves();
-        let policy_map = self.mask_and_normalize_policy(&legal_moves, &raw_policy);
-        (value, policy_map)
+
+        let (value, raw_policy) = {
+            let table = self.transposition_table.borrow();
+            if let Some(&(v, ref p)) = table.get(&hash) {
+                (v, p.clone())
+            } else {
+                drop(table);
+                let (p, v) = self.net.forward(&input);
+                let mut table = self.transposition_table.borrow_mut();
+                if table.len() >= 65_536 { table.clear(); }
+                table.insert(hash, (v, p.clone()));
+                (v, p)
+            }
+        };
+
+        (value, self.mask_and_normalize_policy(&legal_moves, &raw_policy))
+    }
+
+    fn evaluate_batch(&self, states: &[&GameState]) -> Vec<(f32, Vec<(Move, f32)>)> {
+        let mut results: Vec<Option<(f32, Vec<(Move, f32)>)>> = vec![None; states.len()];
+        let mut uncached_indices: Vec<usize> = Vec::new();
+        let mut uncached_inputs: Vec<Vec<f32>> = Vec::new();
+
+        for (i, &state) in states.iter().enumerate() {
+            let input = self.state_to_input(state);
+            let hash = hash_vec_f32(&input);
+            if let Some(&(v, ref p)) = self.transposition_table.borrow().get(&hash) {
+                let legal = state.get_legal_moves();
+                results[i] = Some((v, self.mask_and_normalize_policy(&legal, p)));
+            } else {
+                uncached_indices.push(i);
+                uncached_inputs.push(input);
+            }
+        }
+
+        if !uncached_inputs.is_empty() {
+            let batch_results = self.net.forward_batch(&uncached_inputs);
+            for (j, &state_i) in uncached_indices.iter().enumerate() {
+                let (raw_policy, value) = &batch_results[j];
+                let legal = states[state_i].get_legal_moves();
+                let policy = self.mask_and_normalize_policy(&legal, raw_policy);
+                {
+                    let mut table = self.transposition_table.borrow_mut();
+                    if table.len() >= 65_536 { table.clear(); }
+                    let hash = hash_vec_f32(&uncached_inputs[j]);
+                    table.insert(hash, (*value, raw_policy.clone()));
+                }
+                results[state_i] = Some((*value, policy));
+            }
+        }
+
+        results.into_iter().map(|r| r.unwrap()).collect()
     }
 }
 
@@ -101,32 +162,32 @@ impl NnPolicy {
         input
     }
 
-    fn mask_and_normalize_policy(&self, legal_moves: &[Move], raw_policy: &[f32]) -> HashMap<Move, f32> {
-        let mut masked_policy = HashMap::new();
+    fn mask_and_normalize_policy(&self, legal_moves: &[Move], raw_policy: &[f32]) -> Vec<(Move, f32)> {
+        // Deduplicate by (source, tile) to compute per-action probabilities.
+        let mut unique_probs: FxHashMap<(MoveSource, Tile), f32> = FxHashMap::default();
         let mut total_prob = 0.0;
-        let unique_takes: HashMap<(MoveSource, Tile), ()> = legal_moves.iter().map(|m| ((m.source.clone(), m.tile), ())).collect();
-        for (source, tile) in unique_takes.keys() {
-            if let Some(index) = move_to_policy_index(*tile, source) {
-                if let Some(prob) = raw_policy.get(index) {
-                    let positive_prob = prob.max(0.0);
-                    masked_policy.insert((source.clone(), *tile), positive_prob);
-                    total_prob += positive_prob;
-                }
+        for m in legal_moves {
+            let key = (m.source.clone(), m.tile);
+            if unique_probs.contains_key(&key) { continue; }
+            if let Some(index) = move_to_policy_index(m.tile, &m.source) {
+                let positive_prob = raw_policy.get(index).copied().unwrap_or(0.0).max(0.0);
+                unique_probs.insert(key, positive_prob);
+                total_prob += positive_prob;
             }
         }
-        let mut final_policy = HashMap::new();
+        let mut result = Vec::with_capacity(legal_moves.len());
         if total_prob > 0.0 {
             for m in legal_moves {
-                if let Some(prob) = masked_policy.get(&(m.source.clone(), m.tile)) {
-                    final_policy.insert(m.clone(), prob / total_prob);
+                if let Some(&prob) = unique_probs.get(&(m.source.clone(), m.tile)) {
+                    result.push((m.clone(), prob / total_prob));
                 }
             }
         }
-        if final_policy.is_empty() && !legal_moves.is_empty() {
+        if result.is_empty() && !legal_moves.is_empty() {
             let prob = 1.0 / legal_moves.len() as f32;
-            for m in legal_moves { final_policy.insert(m.clone(), prob); }
+            for m in legal_moves { result.push((m.clone(), prob)); }
         }
-        final_policy
+        result
     }
 }
 
@@ -139,11 +200,17 @@ pub struct MctsNnAI {
     temperature: f32,
     /// Whether to inject Dirichlet noise at the root (should be true during self-play only).
     add_noise: bool,
+    batch_size: usize,
 }
 
 impl MctsNnAI {
     pub fn new(iterations: u32, model_path: Option<String>, model_bytes: Option<Vec<u8>>) -> Self {
-        Self { mcts: None, iterations, model_path, model_bytes, temperature: 0.0, add_noise: false }
+        let hw = HardwareConfig::load();
+        Self {
+            mcts: None, iterations, model_path, model_bytes,
+            temperature: 0.0, add_noise: false,
+            batch_size: hw.mcts_batch_size,
+        }
     }
 
     /// Switch to training mode: enables temperature sampling and Dirichlet root noise.
@@ -176,22 +243,25 @@ impl MctsNnAI {
 impl AIAgent for MctsNnAI {
     fn get_move(&mut self, game_state: &GameState) -> Option<Move> {
         if self.mcts.is_none() {
-            let net = if let Some(bytes) = &self.model_bytes {
-                AzulNet::load_from_bytes(bytes).unwrap_or_else(|e| {
+            let net: Rc<dyn AzulNetwork> = if let Some(bytes) = &self.model_bytes {
+                Rc::new(TacticianNet::load_from_bytes(bytes, TacticianConfig::default()).unwrap_or_else(|e| {
                     println!("Failed to load model from bytes: {}, using random weights.", e);
-                    AzulNet::new_random()
-                })
+                    TacticianNet::new_random(TacticianConfig::default())
+                }))
             } else if let Some(path) = &self.model_path {
-                AzulNet::load_from_path(path).unwrap_or_else(|e| {
+                Rc::new(TacticianNet::load_from_path(path, TacticianConfig::default()).unwrap_or_else(|e| {
                     println!("Failed to load model from '{}': {}, using random weights.", path, e);
-                    AzulNet::new_random()
-                })
+                    TacticianNet::new_random(TacticianConfig::default())
+                }))
             } else {
-                AzulNet::new_random()
+                Rc::new(TacticianNet::new_random(TacticianConfig::default()))
             };
 
-            let policy_handler = NnPolicy { net: Rc::new(net) };
-            self.mcts = Some(Mcts::new(game_state.clone(), policy_handler, self.add_noise));
+            let policy_handler = NnPolicy {
+                net,
+                transposition_table: Rc::new(RefCell::new(FxHashMap::default())),
+            };
+            self.mcts = Some(Mcts::new(game_state.clone(), policy_handler, self.add_noise, self.batch_size));
         }
 
         let mcts = self.mcts.as_mut().unwrap();

@@ -1,9 +1,9 @@
 use azul_engine::ai::{mcts_nn_ai::MctsNnAI, AIAgent};
-use azul_engine::ai::nn::{INPUT_SIZE, POLICY_SIZE};
+use azul_engine::ai::nn::{TacticianConfig, TacticianNet, INPUT_SIZE, POLICY_SIZE};
 use azul_engine::TrainingData;
 use azul_engine::GameState;
-use candle_core::{DType, Device, Tensor};
-use candle_nn::{linear, loss, ops, Linear, Module, Optimizer, VarBuilder, VarMap};
+use candle_core::{Device, Tensor};
+use candle_nn::{loss, ops, Optimizer};
 use candle_nn::optim::{AdamW, ParamsAdamW};
 use rand::seq::SliceRandom;
 use rayon::prelude::*;
@@ -12,42 +12,16 @@ use std::fs;
 use std::fs::File;
 use std::io::BufReader;
 
-const HIDDEN_SIZE: usize = 256;
 /// Number of most-recent data files included in each training run.
 const REPLAY_BUFFER_FILES: usize = 5;
 /// Weight applied to policy loss relative to value loss.
 const POLICY_LOSS_WEIGHT: f64 = 1.0;
 /// Evaluation games run between new and old model after training.
-const EVAL_GAMES: u32 = 300;
+const EVAL_GAMES: u32 = 400;
 /// Minimum new-model win rate required to deploy to release_models/.
-const WIN_RATE_THRESHOLD: f64 = 0.55;
+const WIN_RATE_THRESHOLD: f64 = 0.52;
 /// MCTS iterations used during evaluation games.
 const EVAL_MCTS_ITERS: u32 = 200;
-
-struct Net {
-    fc1: Linear,
-    fc2: Linear,
-    policy_head: Linear,
-    value_head: Linear,
-}
-
-impl Net {
-    fn new(vb: VarBuilder) -> candle_core::Result<Self> {
-        let fc1 = linear(INPUT_SIZE, HIDDEN_SIZE, vb.pp("fc1"))?;
-        let fc2 = linear(HIDDEN_SIZE, HIDDEN_SIZE, vb.pp("fc2"))?;
-        let policy_head = linear(HIDDEN_SIZE, POLICY_SIZE, vb.pp("policy_head"))?;
-        let value_head = linear(HIDDEN_SIZE, 1, vb.pp("value_head"))?;
-        Ok(Self { fc1, fc2, policy_head, value_head })
-    }
-
-    fn forward(&self, xs: &Tensor) -> candle_core::Result<(Tensor, Tensor)> {
-        let h = self.fc1.forward(xs)?.relu()?;
-        let h = self.fc2.forward(&h)?.relu()?;
-        let policy = self.policy_head.forward(&h)?;
-        let value = self.value_head.forward(&h)?.tanh()?;
-        Ok((policy, value))
-    }
-}
 
 /// Determine the winner using score, then complete rows as a tiebreaker.
 /// Returns `None` on a genuine tie (both metrics equal), matching `headless.rs`.
@@ -109,7 +83,7 @@ fn main() -> anyhow::Result<()> {
         .filter_map(Result::ok)
         .filter(|e| e.path().extension().map_or(false, |ext| ext == "json"))
         .collect();
-    data_files.sort_by_key(|e| e.metadata().unwrap().created().unwrap());
+    data_files.sort_by_key(|e| e.metadata().unwrap().modified().unwrap());
 
     let mut data: Vec<TrainingData> = data_files
         .iter()
@@ -141,7 +115,6 @@ fn main() -> anyhow::Result<()> {
 
     // --- 2. Set up Model ---
     let device = Device::Cpu;
-    let mut varmap = VarMap::new();
 
     let training_models_dir = "training_models";
     fs::create_dir_all(training_models_dir)?;
@@ -149,7 +122,7 @@ fn main() -> anyhow::Result<()> {
     let latest_model = fs::read_dir(training_models_dir)?
         .filter_map(Result::ok)
         .filter(|e| e.path().extension().map_or(false, |ext| ext == "safetensors"))
-        .max_by_key(|entry| entry.metadata().unwrap().created().unwrap());
+        .max_by_key(|entry| entry.metadata().unwrap().modified().unwrap());
 
     let mut next_version = 1;
     let mut old_model_path: Option<String> = None;
@@ -158,7 +131,6 @@ fn main() -> anyhow::Result<()> {
         let path = entry.path();
         println!("Loading model for fine-tuning: {:?}", path);
         old_model_path = Some(path.to_string_lossy().to_string());
-        varmap.load(&path)?;
 
         if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
             if let Some(version_str) = stem.strip_prefix("azul_model_v") {
@@ -173,11 +145,14 @@ fn main() -> anyhow::Result<()> {
         );
     }
 
-    let vb = VarBuilder::from_varmap(&varmap, DType::F32, &device);
-    let net = Net::new(vb)?;
+    let net = if let Some(ref path) = old_model_path {
+        TacticianNet::load_from_path(path, TacticianConfig::default())?
+    } else {
+        TacticianNet::new_random(TacticianConfig::default())
+    };
 
     let mut opt = AdamW::new(
-        varmap.all_vars(),
+        net.trainable_vars(),
         ParamsAdamW { lr: 1e-4, weight_decay: 0.0, ..Default::default() },
     )?;
 
@@ -206,9 +181,9 @@ fn main() -> anyhow::Result<()> {
 
             let state_t = Tensor::from_slice(&state_flat, (n, INPUT_SIZE), &device)?;
             let policy_t = Tensor::from_slice(&policy_flat, (n, POLICY_SIZE), &device)?;
-            let outcome_t = Tensor::from_slice(&outcome_flat, (n, 1), &device)?;
+            let outcome_t = Tensor::from_slice(&outcome_flat, (n,), &device)?;
 
-            let (policy_logits, value_pred) = net.forward(&state_t)?;
+            let (policy_logits, value_pred) = net.forward_train(&state_t)?;
 
             let value_loss = loss::mse(&value_pred, &outcome_t)?;
 
@@ -231,7 +206,7 @@ fn main() -> anyhow::Result<()> {
         "{}/azul_model_v{}.safetensors",
         training_models_dir, next_version
     );
-    varmap.save(&new_training_model_path)?;
+    net.save(&new_training_model_path)?;
     println!("Saved new model to '{}'", new_training_model_path);
 
     // --- 5. Evaluate and Gate Deployment ---
@@ -263,7 +238,7 @@ fn main() -> anyhow::Result<()> {
     };
 
     if deploy {
-        varmap.save(&release_model_path)?;
+        net.save(&release_model_path)?;
         println!("Model deployed for release to '{}'", release_model_path);
     } else {
         println!(

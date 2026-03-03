@@ -118,7 +118,7 @@ fn create_agent(name: &str) -> Box<dyn AIAgent> {
         "greedyai" => Box::new(GreedyAI),
         "convergenceai" => Box::new(ConvergenceAI::default()),
         "mctsnn" => {
-            let iterations = if parts.len() > 1 { parts[1].parse::<u32>().unwrap_or(800) } else { 800 };
+            let iterations = if parts.len() > 1 { parts[1].parse::<u32>().unwrap_or(600) } else { 600 };
             let model_path = if parts.len() > 2 { Some(parts[2].to_string()) } else { None };
             Box::new(MctsNnAI::new(iterations, model_path, None))
         }

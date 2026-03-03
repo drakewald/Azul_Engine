@@ -1,11 +1,12 @@
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
 use rand::seq::SliceRandom;
 use rand::{thread_rng, Rng};
 use wasm_bindgen::prelude::*;
 use std::fmt;
 
 pub mod ai;
+#[cfg(feature = "native")]
+pub mod config;
 use ai::{
     human_agent::HumanAgent,
     heuristic_ai::HeuristicAI,
@@ -140,6 +141,18 @@ const WALL_LAYOUT: [[Tile; NUM_COLS]; NUM_ROWS] = [
 
 // --- Game Logic Implementation ---
 
+fn tile_index(t: Tile) -> usize {
+    match t {
+        Tile::Blue => 0,
+        Tile::Yellow => 1,
+        Tile::Red => 2,
+        Tile::Black => 3,
+        Tile::White => 4,
+    }
+}
+
+const ALL_TILES: [Tile; 5] = [Tile::Blue, Tile::Yellow, Tile::Red, Tile::Black, Tile::White];
+
 impl GameState {
     pub fn new(num_players: usize) -> Self {
         let players = (0..num_players).map(|_| PlayerBoard::new()).collect();
@@ -192,19 +205,22 @@ impl GameState {
         self.first_player_marker_in_center = true;
     }
 
+    #[inline]
     pub fn get_legal_moves(&self) -> Vec<Move> {
-        let mut legal_moves = Vec::new();
+        let mut legal_moves = Vec::with_capacity(64);
         let current_player_board = &self.players[self.current_player_idx];
 
         let mut generate_moves_for_source = |source: MoveSource, tiles: &[Tile]| {
-            let unique_tiles: HashSet<_> = tiles.iter().cloned().collect();
-            for &tile in unique_tiles.iter() {
-                for i in 0..NUM_ROWS {
-                    if current_player_board.is_placement_valid(i, tile) {
+            let mut seen = [false; 5];
+            for &t in tiles { seen[tile_index(t)] = true; }
+            for (i, &tile) in ALL_TILES.iter().enumerate() {
+                if !seen[i] { continue; }
+                for row in 0..NUM_ROWS {
+                    if current_player_board.is_placement_valid(row, tile) {
                         legal_moves.push(Move {
                             source: source.clone(),
                             tile,
-                            destination: MoveDestination::PatternLine(i),
+                            destination: MoveDestination::PatternLine(row),
                         });
                     }
                 }
@@ -227,6 +243,7 @@ impl GameState {
         legal_moves
     }
 
+    #[inline]
     pub fn apply_move(&mut self, player_move: &Move) {
         let player = &mut self.players[self.current_player_idx];
         let source_tiles = match player_move.source {
@@ -254,6 +271,7 @@ impl GameState {
         self.current_player_idx = (self.current_player_idx + 1) % self.players.len();
     }
 
+    #[inline]
     pub fn is_round_over(&self) -> bool {
         self.factories.iter().all(|f| f.is_empty()) && self.center.is_empty()
     }
@@ -315,6 +333,7 @@ impl PlayerBoard {
         }
     }
 
+    #[inline]
     pub fn is_placement_valid(&self, pattern_line_idx: usize, tile_color: Tile) -> bool {
         let line = &self.pattern_lines[pattern_line_idx];
         if line.len() >= pattern_line_idx + 1 { return false; }
