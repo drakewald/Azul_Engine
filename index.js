@@ -245,7 +245,8 @@ function updatePlayerOptions(numPlayers) {
         <option value="Human" ${i === 0 ? 'selected' : ''}>Human</option>
         <option value="SimpleAI">Simple AI</option>
         <option value="HeuristicAI">Heuristic AI</option>
-        <option value="MctsAI">MCTS Heuristic AI</option>
+        <option value="GreedyAI">Greedy AI</option>
+        <option value="ConvergenceAI">Convergence AI</option>
         <option value="MctsNnAI" ${i !== 0 ? 'selected' : ''}>MCTS NN AI (Release Model)</option>
       </select>
     `;
@@ -268,7 +269,8 @@ async function startGame() {
     if (playerType === 'Human') playerTypesForWasm.push(0);
     if (playerType === 'SimpleAI') playerTypesForWasm.push(1);
     if (playerType === 'HeuristicAI') playerTypesForWasm.push(2);
-    if (playerType === 'MctsAI') playerTypesForWasm.push(3);
+    if (playerType === 'GreedyAI') playerTypesForWasm.push(5);
+    if (playerType === 'ConvergenceAI') playerTypesForWasm.push(3);
     if (playerType === 'MctsNnAI') {
         playerTypesForWasm.push(4);
         needsModel = true;

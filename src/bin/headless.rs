@@ -1,16 +1,18 @@
 use azul_engine::ai::{
-    simple_ai::SimpleAI, 
-    heuristic_ai::HeuristicAI, 
-    mcts_heuristic_ai::MctsHeuristicAI,
+    simple_ai::SimpleAI,
+    heuristic_ai::HeuristicAI,
+    greedy_ai::GreedyAI,
+    convergence_ai::ConvergenceAI,
     mcts_nn_ai::MctsNnAI,
     AIAgent
 };
-use azul_engine::{GameState, Move, TileBagSummary, TurnState, TrainingData};
+use azul_engine::{GameState, Move, Tile, TileBagSummary, TrainingData};
 use chrono::prelude::*;
 use clap::Parser;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::fs;
+use std::io::BufWriter;
 use std::time::Instant;
 use rayon::prelude::*;
 
@@ -30,7 +32,6 @@ struct Cli {
 #[derive(Serialize)]
 struct GameTurn {
     player_index: usize,
-    state_before_move: TurnState,
     chosen_move: Move,
 }
 
@@ -38,12 +39,16 @@ struct GameTurn {
 struct GameRound {
     round_number: usize,
     tile_bag_at_start_of_round: TileBagSummary,
+    factories_at_start: Vec<Vec<Tile>>,
     turns: Vec<GameTurn>,
 }
 
 #[derive(Serialize)]
 struct GameLog {
     matchup: Vec<String>,
+    /// Full state at the start of the game; all subsequent states are
+    /// reconstructable by replaying `history[..][turns][..][chosen_move]`.
+    initial_state: GameState,
     history: Vec<GameRound>,
     final_scores: Vec<u32>,
 }
@@ -110,10 +115,8 @@ fn create_agent(name: &str) -> Box<dyn AIAgent> {
     match agent_type.as_str() {
         "simpleai" => Box::new(SimpleAI),
         "heuristicai" => Box::new(HeuristicAI),
-        "mctsheuristic" => {
-            let iterations = if parts.len() > 1 { parts[1].parse::<u32>().unwrap_or(5000) } else { 5000 };
-            Box::new(MctsHeuristicAI::new(iterations))
-        }
+        "greedyai" => Box::new(GreedyAI),
+        "convergenceai" => Box::new(ConvergenceAI::default()),
         "mctsnn" => {
             let iterations = if parts.len() > 1 { parts[1].parse::<u32>().unwrap_or(800) } else { 800 };
             let model_path = if parts.len() > 2 { Some(parts[2].to_string()) } else { None };
@@ -268,34 +271,41 @@ fn run_simulations(cli: Cli) -> std::io::Result<()> {
     let timestamp = Local::now().format("%Y-%m-%d_%H-%M-%S").to_string();
     let output_dir = format!("stats/{}", timestamp);
     fs::create_dir_all(&output_dir)?;
+
+    // summary_stats stays human-readable JSON (it's tiny)
     let stats_path = format!("{}/summary_stats.json", output_dir);
-    let logs_path = format!("{}/game_logs.json", output_dir);
     let stats_file = fs::File::create(&stats_path)?;
     serde_json::to_writer_pretty(stats_file, &stats)?;
+
+    // game_logs: compact JSON wrapped in zstd compression
+    let logs_path = format!("{}/game_logs.json.zst", output_dir);
     let logs_file = fs::File::create(&logs_path)?;
-    serde_json::to_writer_pretty(logs_file, &game_logs)?;
+    let buf = BufWriter::new(logs_file);
+    let mut encoder = zstd::Encoder::new(buf, 3)?;
+    serde_json::to_writer(&mut encoder, &game_logs)?;
+    encoder.finish()?;
+
     println!("Done. Results saved in '{}' directory.", output_dir);
     Ok(())
 }
 
 fn run_game(mut agents: Vec<Box<dyn AIAgent>>, matchup: Vec<String>) -> (GameState, GameLog) {
     let mut game = GameState::new(agents.len());
+    let initial_state = game.clone();
     let mut round_history: Vec<GameRound> = Vec::new();
     let mut round_counter = 1;
 
     while !game.end_game_triggered {
         let tile_bag_at_start = TileBagSummary::from_vec(&game.tile_bag);
+        let factories_at_start = game.factories.clone();
         let mut turns_this_round: Vec<GameTurn> = Vec::new();
         while !game.is_round_over() {
-            let state_before_move = TurnState::from(&game);
             let agent = &mut agents[game.current_player_idx];
             if let Some(ai_move) = agent.get_move(&game) {
-                let turn = GameTurn {
+                turns_this_round.push(GameTurn {
                     player_index: game.current_player_idx,
-                    state_before_move,
                     chosen_move: ai_move.clone(),
-                };
-                turns_this_round.push(turn);
+                });
                 game.apply_move(&ai_move);
             } else {
                 break;
@@ -304,6 +314,7 @@ fn run_game(mut agents: Vec<Box<dyn AIAgent>>, matchup: Vec<String>) -> (GameSta
         round_history.push(GameRound {
             round_number: round_counter,
             tile_bag_at_start_of_round: tile_bag_at_start,
+            factories_at_start,
             turns: turns_this_round,
         });
         game.run_tiling_phase();
@@ -313,6 +324,7 @@ fn run_game(mut agents: Vec<Box<dyn AIAgent>>, matchup: Vec<String>) -> (GameSta
     game.apply_end_game_scoring();
     let log = GameLog {
         matchup,
+        initial_state,
         history: round_history,
         final_scores: game.players.iter().map(|p| p.score).collect(),
     };

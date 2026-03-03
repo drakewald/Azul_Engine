@@ -1,11 +1,13 @@
 use crate::{GameState, Move};
 use std::any::Any;
 
+pub mod heuristic_utils;
 pub mod simple_ai;
 pub mod heuristic_ai;
+pub mod greedy_ai;
+pub mod convergence_ai;
 pub mod human_agent;
 pub mod mcts_lib;
-pub mod mcts_heuristic_ai;
 
 // These modules will only be compiled when the "native" feature is enabled.
 #[cfg(feature = "native")]

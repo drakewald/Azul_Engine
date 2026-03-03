@@ -9,7 +9,8 @@ pub mod ai;
 use ai::{
     human_agent::HumanAgent,
     heuristic_ai::HeuristicAI,
-    mcts_heuristic_ai::MctsHeuristicAI,
+    greedy_ai::GreedyAI,
+    convergence_ai::ConvergenceAI,
     simple_ai::SimpleAI,
     AIAgent
 };
@@ -451,7 +452,7 @@ impl WasmGame {
                 0 => Box::new(HumanAgent),
                 1 => Box::new(SimpleAI),
                 2 => Box::new(HeuristicAI),
-                3 => Box::new(MctsHeuristicAI::new(500)),
+                3 => Box::new(ConvergenceAI::default()),
                 4 => {
                     // This code will only be included when compiling for Wasm.
                     #[cfg(target_arch = "wasm32")]
@@ -460,6 +461,7 @@ impl WasmGame {
                     }
                     Box::new(SimpleAI)
                 },
+                5 => Box::new(GreedyAI),
                 _ => Box::new(HumanAgent),
             }
         }).collect();

@@ -25,6 +25,7 @@ clap = { version = "4.0", features = ["derive"], optional = true }
 chrono = { version = "0.4", optional = true }
 rayon = { version = "1.5", optional = true }
 serde_json = { version = "1.0", optional = true }
+zstd = { version = "0.13", optional = true }
 
 # Wasm-only dependency for console logging
 [target.'cfg(target_arch = "wasm32")'.dependencies]
@@ -33,7 +34,7 @@ web-sys = { version = "0.3", features = ["console"] }
 
 [features]
 # The "native" feature enables all dependencies not compatible with Wasm.
-native = ["anyhow", "candle-core", "candle-nn", "clap", "chrono", "rayon", "serde_json"]
+native = ["anyhow", "candle-core", "candle-nn", "clap", "chrono", "rayon", "serde_json", "zstd"]
 
 # The headless and train binaries require the "native" feature to be enabled.
 [[bin]]
@@ -42,4 +43,8 @@ required-features = ["native"]
 
 [[bin]]
 name = "train"
+required-features = ["native"]
+
+[[bin]]
+name = "replay"
 required-features = ["native"]
