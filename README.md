@@ -56,7 +56,7 @@ cargo run --release --features="native" --bin headless -- --players <agents...> 
 | `heuristicai` | Rule-based heuristics |
 | `greedyai` | Greedy immediate-score maximiser |
 | `convergenceai` | Convergence-focused heuristic |
-| `mctsnn:<iters>:<model_path>` | MCTS with neural network policy (default 800 iters) |
+| `mctsnn:<iters>:<model_path>` | MCTS with neural network policy (default 300 iters) |
 
 **Examples:**
 
@@ -71,7 +71,7 @@ cargo run --release --features="native" --bin headless -- \
 
 # Evaluate a trained model head-to-head
 cargo run --release --features="native" --bin headless -- \
-  --players mctsnn:200:release_models/azul_alpha.safetensors heuristicai
+  --players mctsnn:300:release_models/azul_alpha.safetensors heuristicai
 ```
 
 **Output files** in `stats/<timestamp>/`:
@@ -114,44 +114,64 @@ Factory state is reconstructed exactly at each round boundary using recorded lay
 
 ## Neural Network Training Pipeline
 
-The `mctsnn` agent uses an MLP trained via AlphaZero-style self-play. Models are saved as `.safetensors` files.
+The `mctsnn` agent uses a residual network trained via AlphaZero-style self-play. Models are saved as `.safetensors` files.
 
-### Step 1 — Generate Training Data
+### Quick start — automated loop
+
+```bash
+# Self-play → train → evaluate, 10 iterations (250 games each)
+./util/train_loop.sh
+
+# Custom: 20 iterations, 500 games, also run 3p and 4p self-play
+./util/train_loop.sh 20 500 --multi
+```
+
+### Bootstrap — new architecture or fresh start
+
+Use this when switching to a new NN topology so existing training data isn't wasted.
+
+```bash
+./util/bootstrap.sh
+```
+
+Clears `training_models/`, trains two fresh models on all existing `training_data/`, runs a 400-game tournament, and saves the winner as `azul_model_v1.safetensors`. Then continue with `train_loop.sh` as normal.
+
+### Manual steps
+
+**Step 1 — Generate training data**
 
 ```bash
 # 2-player self-play, auto-loads latest model from training_models/
 cargo run --release --features="native" --bin headless -- \
-  --self-play --players mctsnn:200 --games 100
+  --self-play --players mctsnn:300 --games 250
 
 # 4-player self-play
 cargo run --release --features="native" --bin headless -- \
-  --self-play --self-play-players 4 --players mctsnn:200 --games 50
+  --self-play --self-play-players 4 --players mctsnn:300 --games 250
 ```
 
 Data is saved to `training_data/data_<timestamp>.json`.
 
-### Step 2 — Train
+**Step 2 — Train**
 
 ```bash
 cargo run --release --features="native" --bin train
 ```
 
 The trainer:
-1. Loads the last 5 data files (rolling replay buffer)
-2. Fine-tunes (or initialises) the model for 10 epochs with AdamW
-3. Evaluates the new model vs. the previous one (300 games, 200 MCTS iters)
-4. Deploys to `release_models/azul_alpha.safetensors` only if the new model achieves ≥ 55% adjusted win rate
+1. Loads the last 5 data files (~90k samples, rolling replay buffer)
+2. Fine-tunes (or initialises) the model for 10 epochs with AdamW (lr=1e-4)
+3. Evaluates the new model vs. the previous one (400 games, 300 MCTS iters)
+4. Deploys to `release_models/azul_alpha.safetensors` only if the new model achieves ≥ 52% win rate
 
 Versioned checkpoints are saved to `training_models/azul_model_vN.safetensors`.
 
-### Step 3 — Evaluate & Repeat
+**Step 3 — Evaluate & repeat**
 
 ```bash
 cargo run --release --features="native" --bin headless -- \
-  --players mctsnn:200:release_models/azul_alpha.safetensors heuristicai
+  --players mctsnn:300:release_models/azul_alpha.safetensors heuristicai
 ```
-
-Repeat from Step 1 to continue improving the model.
 
 ---
 
@@ -165,7 +185,7 @@ Repeat from Step 1 to continue improving the model.
 | `ConvergenceAI` | `convergenceai` | Focuses on completing wall rows and columns |
 | `MctsNnAI` | `mctsnn:<iters>:<model>` | MCTS with a neural network policy + value head |
 
-MCTS agents use PUCT selection (exploration constant 1.41). The NN architecture is a two-hidden-layer MLP (`583 → 256 → 256 → policy + value`).
+MCTS uses PUCT selection (exploration constant 1.41) with progressive widening. The NN architecture (`TacticianNet`) uses a residual trunk: stem (256) → 2× ResBlock → bottleneck (128), with separate policy and value heads.
 
 ---
 
@@ -174,17 +194,25 @@ MCTS agents use PUCT selection (exploration constant 1.41). The NN architecture 
 ```
 src/
   lib.rs               # Core game logic (GameState, PlayerBoard, Move) + Wasm wrapper
+  config.rs            # Hardware config (mcts_batch_size)
   ai/
     simple_ai.rs
     heuristic_ai.rs
     greedy_ai.rs
     convergence_ai.rs
-    mcts_nn_ai.rs      # native only
     mcts_lib.rs        # Generic MCTS infrastructure
-    nn.rs              # Neural network definition (candle)
+    mcts_nn_ai.rs      # MCTS + NN agent
+    nn/
+      mod.rs           # AzulNetwork trait, encode_state, ResBlock
+      tactician.rs     # TacticianNet — current active species
   bin/
     headless.rs        # CLI: parallel simulation + self-play data generation
     train.rs           # CLI: NN training + evaluation + deployment
+    bootstrap.rs       # CLI: train fresh models on all data, tournament picks winner
     replay.rs          # CLI: interactive game log viewer
+util/
+  train_loop.sh        # Automated self-play → train → evaluate loop
+  bootstrap.sh         # Bootstrap a new model architecture
 index.html / index.js  # Web UI
+hardware_config.json   # Runtime config (mcts_batch_size)
 ```

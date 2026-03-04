@@ -2,12 +2,14 @@
 # train_loop.sh — self-play → train → evaluate loop
 #
 # Usage:
-#   ./train_loop.sh [loops] [games_per_player_count] [--multi]
+#   ./util/train_loop.sh [loops] [games_per_player_count] [--multi]
 #
 # Defaults: 10 loops, 100 games per player count per iteration, 2p only.
 # --multi: self-play runs 2p, 3p, and 4p in random order each iteration.
 
 set -euo pipefail
+
+cd "$(dirname "$0")/.."
 
 LOOPS=10
 GAMES=250
@@ -26,7 +28,7 @@ done
 LOOPS="${args[0]:-$LOOPS}"
 GAMES="${args[1]:-$GAMES}"
 
-MCTS_ITERS=600
+MCTS_ITERS=300
 EVAL_GAMES=100
 
 HEADLESS="./target/release/headless"

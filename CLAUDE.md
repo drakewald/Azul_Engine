@@ -40,12 +40,12 @@ cargo run --release --features="native" --bin replay -- stats/<timestamp>/game_l
 ### Training scripts
 ```bash
 # Full self-play → train → evaluate loop (default: 10 loops, 250 games, 2p)
-./train_loop.sh
-./train_loop.sh 20 500          # custom loops and games
-./train_loop.sh --multi         # also runs 3p and 4p self-play each iteration
+./util/train_loop.sh
+./util/train_loop.sh 20 500          # custom loops and games
+./util/train_loop.sh --multi         # also runs 3p and 4p self-play each iteration
 
 # Bootstrap: train two fresh models on all existing data, tournament picks winner
-./bootstrap.sh
+./util/bootstrap.sh
 ```
 
 ### Standard cargo
@@ -149,17 +149,17 @@ mctsnn:<iterations>:<model_path>    # default 600 iterations, optional path
 
 ### Normal loop (ongoing improvement)
 ```bash
-./train_loop.sh          # 10 iterations, 250 games, 2p, 600 MCTS iters
-./train_loop.sh --multi  # also runs 3p/4p self-play each iteration
+./util/train_loop.sh          # 10 iterations, 250 games, 2p, 300 MCTS iters
+./util/train_loop.sh --multi  # also runs 3p/4p self-play each iteration
 ```
 Each iteration: self-play → train (last 5 files, 10 epochs, AdamW lr=1e-4) → deploy if ≥52% win rate.
 
 ### Bootstrap (new topology or fresh start)
 Use when the existing model weights are incompatible with a topology change:
 ```bash
-./bootstrap.sh
+./util/bootstrap.sh
 ```
-Clears `training_models/`, trains two fresh models on **all** existing `training_data/`, tournament picks the winner as `azul_model_v1.safetensors`. Then run `train_loop.sh` as normal.
+Clears `training_models/`, trains two fresh models on **all** existing `training_data/`, tournament picks the winner as `azul_model_v1.safetensors`. Then run `./util/train_loop.sh` as normal.
 
 ### Manual steps
 1. Generate data: `headless --self-play` → `training_data/data_<timestamp>.json`

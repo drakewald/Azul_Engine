@@ -2,12 +2,14 @@
 # bootstrap.sh — train two fresh models on all existing data, tournament decides the base model.
 #
 # Usage:
-#   ./bootstrap.sh
+#   ./util/bootstrap.sh
 #
 # Clears training_models/ before running so the new model starts as v1.
 # Does NOT touch training_data/ — all existing data is reused.
 
 set -euo pipefail
+
+cd "$(dirname "$0")/.."
 
 echo "Building release binary..."
 cargo build --release --features="native" --bin bootstrap
