@@ -62,3 +62,7 @@ required-features = ["native"]
 [[bin]]
 name = "bootstrap"
 required-features = ["native"]
+
+[[bin]]
+name = "elo"
+required-features = ["native"]

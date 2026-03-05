@@ -1,7 +1,7 @@
 use crate::{
     ai::{
         mcts_lib::{Mcts, MctsPolicy},
-        nn::{AzulNetwork, TacticianConfig, TacticianNet, INPUT_SIZE, POLICY_SIZE},
+        nn::{encode_state, move_to_policy_index, AzulNetwork, TacticianConfig, TacticianNet, POLICY_SIZE},
         AIAgent,
     },
     GameState, Move, MoveSource, Tile,
@@ -13,31 +13,6 @@ use std::any::Any;
 use std::cell::RefCell;
 use std::hash::{Hash, Hasher};
 use std::rc::Rc;
-
-// --- Constants used only for state encoding ---
-const NUM_FACTORIES: usize = 9;
-const NUM_COLORS: usize = 5;
-const MAX_CENTER_TILES: usize = 27;
-const MAX_PLAYERS: usize = 4;
-const PATTERN_LINE_SLOTS: usize = 5 * 5;
-const WALL_SLOTS: usize = 5 * 5;
-const FLOOR_SLOTS: usize = 7;
-
-// --- Helper Functions ---
-fn color_to_index(tile: Tile) -> usize {
-    match tile {
-        Tile::Blue => 0, Tile::Yellow => 1, Tile::Red => 2,
-        Tile::Black => 3, Tile::White => 4,
-    }
-}
-
-fn move_to_policy_index(move_tile: Tile, move_source: &MoveSource) -> Option<usize> {
-    let color_idx = color_to_index(move_tile);
-    match move_source {
-        MoveSource::Factory(idx) => Some(*idx * NUM_COLORS + color_idx),
-        MoveSource::Center => Some(NUM_FACTORIES * NUM_COLORS + color_idx),
-    }
-}
 
 fn hash_vec_f32(v: &[f32]) -> u64 {
     let mut h = FxHasher::default();
@@ -115,69 +90,34 @@ impl MctsPolicy for NnPolicy {
 
 impl NnPolicy {
     fn state_to_input(&self, game_state: &GameState) -> Vec<f32> {
-        let mut input = vec![0.0; INPUT_SIZE];
-        let mut offset = 0;
-        for factory_idx in 0..NUM_FACTORIES {
-            if let Some(factory) = game_state.factories.get(factory_idx) {
-                for tile in factory {
-                    let color_idx = color_to_index(*tile);
-                    for slot in 0..4 {
-                        let index = offset + (color_idx * 4) + slot;
-                        if input[index] == 0.0 { input[index] = 1.0; break; }
-                    }
-                }
-            }
-            offset += NUM_COLORS * 4;
-        }
-        for (i, tile) in game_state.center.iter().enumerate().take(MAX_CENTER_TILES) {
-            let color_idx = color_to_index(*tile);
-            input[offset + (i * NUM_COLORS) + color_idx] = 1.0;
-        }
-        offset += MAX_CENTER_TILES * NUM_COLORS;
-        for player_idx in 0..MAX_PLAYERS {
-            if let Some(player) = game_state.players.get(player_idx) {
-                input[offset] = player.score as f32 / 100.0;
-                offset += 1;
-                for (row_idx, line) in player.pattern_lines.iter().enumerate() {
-                    for i in 0..line.len() { input[offset + (row_idx * 5) + i] = 1.0; }
-                }
-                offset += PATTERN_LINE_SLOTS;
-                for (row_idx, row) in player.wall.iter().enumerate() {
-                    for (col_idx, tile_option) in row.iter().enumerate() {
-                        if tile_option.is_some() { input[offset + (row_idx * 5) + col_idx] = 1.0; }
-                    }
-                }
-                offset += WALL_SLOTS;
-                for i in 0..player.floor_line.len().min(FLOOR_SLOTS) { input[offset + i] = 1.0; }
-                offset += FLOOR_SLOTS;
-                if player.has_first_player_marker { input[offset] = 1.0; }
-                offset += 1;
-            } else {
-                offset += 1 + PATTERN_LINE_SLOTS + WALL_SLOTS + FLOOR_SLOTS + 1;
-            }
-        }
-        input[offset] = (game_state.current_player_idx as f32 + 1.0) / MAX_PLAYERS as f32;
-        input
+        encode_state(game_state)
     }
 
     fn mask_and_normalize_policy(&self, legal_moves: &[Move], raw_policy: &[f32]) -> Vec<(Move, f32)> {
-        // Deduplicate by (source, tile) to compute per-action probabilities.
+        // Convert raw logits to probabilities via numerically-stable softmax.
+        let max_logit = raw_policy.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+        let exp_sum: f32 = raw_policy.iter().map(|&x| (x - max_logit).exp()).sum();
+
+        // Mask to legal (source, tile) pairs and sum their softmax probabilities.
+        // Multiple destinations for the same (source, tile) share the same policy index,
+        // so we deduplicate here to get a proper masked sum.
         let mut unique_probs: FxHashMap<(MoveSource, Tile), f32> = FxHashMap::default();
-        let mut total_prob = 0.0;
+        let mut masked_sum = 0.0f32;
         for m in legal_moves {
             let key = (m.source.clone(), m.tile);
             if unique_probs.contains_key(&key) { continue; }
             if let Some(index) = move_to_policy_index(m.tile, &m.source) {
-                let positive_prob = raw_policy.get(index).copied().unwrap_or(0.0).max(0.0);
-                unique_probs.insert(key, positive_prob);
-                total_prob += positive_prob;
+                let prob = (raw_policy.get(index).copied().unwrap_or(f32::NEG_INFINITY) - max_logit).exp() / exp_sum;
+                unique_probs.insert(key, prob);
+                masked_sum += prob;
             }
         }
+
         let mut result = Vec::with_capacity(legal_moves.len());
-        if total_prob > 0.0 {
+        if masked_sum > 0.0 {
             for m in legal_moves {
                 if let Some(&prob) = unique_probs.get(&(m.source.clone(), m.tile)) {
-                    result.push((m.clone(), prob / total_prob));
+                    result.push((m.clone(), prob / masked_sum));
                 }
             }
         }

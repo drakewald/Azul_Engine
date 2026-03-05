@@ -7,6 +7,8 @@ use std::fmt;
 pub mod ai;
 #[cfg(feature = "native")]
 pub mod config;
+#[cfg(feature = "native")]
+pub mod elo;
 use ai::{
     human_agent::HumanAgent,
     heuristic_ai::HeuristicAI,

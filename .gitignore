@@ -1,3 +1,6 @@
 /target
 /stats
 /training_data
+/training_models
+/pkg
+/temp

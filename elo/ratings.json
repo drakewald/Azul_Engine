@@ -1,0 +1,18 @@
+{
+  "ratings": {
+    "clusterai": 1025.1343898399414,
+    "convergenceai": 1037.5719884988432,
+    "greedyai": 1026.0747342460545,
+    "heuristicai": 1276.2301475142237
+  },
+  "game_counts": {
+    "clusterai": 75000,
+    "convergenceai": 76500,
+    "greedyai": 77000,
+    "heuristicai": 74700
+  },
+  "processed_files": [
+    "stats/2026-03-04_21-17-51/game_logs.json.zst"
+  ],
+  "total_games": 118700
+}

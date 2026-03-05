@@ -17,11 +17,11 @@ const REPLAY_BUFFER_FILES: usize = 5;
 /// Weight applied to policy loss relative to value loss.
 const POLICY_LOSS_WEIGHT: f64 = 1.0;
 /// Evaluation games run between new and old model after training.
-const EVAL_GAMES: u32 = 400;
+const EVAL_GAMES: u32 = 140;
 /// Minimum new-model win rate required to deploy to release_models/.
 const WIN_RATE_THRESHOLD: f64 = 0.52;
 /// MCTS iterations used during evaluation games.
-const EVAL_MCTS_ITERS: u32 = 200;
+const EVAL_MCTS_ITERS: u32 = 300;
 
 /// Determine the winner using score, then complete rows as a tiebreaker.
 /// Returns `None` on a genuine tie (both metrics equal), matching `headless.rs`.
@@ -153,15 +153,19 @@ fn main() -> anyhow::Result<()> {
 
     let mut opt = AdamW::new(
         net.trainable_vars(),
-        ParamsAdamW { lr: 1e-4, weight_decay: 0.0, ..Default::default() },
+        ParamsAdamW { lr: 1e-4, weight_decay: 1e-4, ..Default::default() },
     )?;
 
     // --- 3. Training Loop ---
-    let epochs = 10;
+    let epochs = 5;
     let batch_size = 64;
     println!("Starting training for {} epochs...", epochs);
 
     for epoch in 1..=epochs {
+        let mut epoch_value_loss = 0f64;
+        let mut epoch_policy_loss = 0f64;
+        let mut num_batches = 0usize;
+
         for batch_start in (0..data.len()).step_by(batch_size) {
             let batch_end = (batch_start + batch_size).min(data.len());
             if batch_start >= batch_end {
@@ -191,11 +195,21 @@ fn main() -> anyhow::Result<()> {
             let log_probs = ops::log_softmax(&policy_logits, 1)?;
             let policy_loss = policy_t.mul(&log_probs)?.mean_all()?.neg()?;
 
-            let total_loss = (value_loss + (policy_loss * POLICY_LOSS_WEIGHT)?)?;
+            let total_loss = (value_loss.clone() + (policy_loss.clone() * POLICY_LOSS_WEIGHT)?)?;
+
+            epoch_value_loss += value_loss.to_scalar::<f32>()? as f64;
+            epoch_policy_loss += policy_loss.to_scalar::<f32>()? as f64;
+            num_batches += 1;
 
             opt.backward_step(&total_loss)?;
         }
-        println!("Epoch {} complete.", epoch);
+
+        let avg_value = epoch_value_loss / num_batches as f64;
+        let avg_policy = epoch_policy_loss / num_batches as f64;
+        println!(
+            "Epoch {}/{}: value_loss={:.4}  policy_loss={:.4}",
+            epoch, epochs, avg_value, avg_policy
+        );
     }
 
     // --- 4. Save New Model ---

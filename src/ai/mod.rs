@@ -6,6 +6,7 @@ pub mod simple_ai;
 pub mod heuristic_ai;
 pub mod greedy_ai;
 pub mod convergence_ai;
+pub mod cluster_ai;
 pub mod human_agent;
 pub mod mcts_lib;
 

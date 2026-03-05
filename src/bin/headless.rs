@@ -3,12 +3,16 @@ use azul_engine::ai::{
     heuristic_ai::HeuristicAI,
     greedy_ai::GreedyAI,
     convergence_ai::ConvergenceAI,
+    cluster_ai::ClusterAI,
     mcts_nn_ai::MctsNnAI,
+    nn::{encode_state, move_to_policy_index, POLICY_SIZE},
     AIAgent
 };
 use azul_engine::{GameState, Move, Tile, TileBagSummary, TrainingData};
+use azul_engine::elo::EloState;
 use chrono::prelude::*;
 use clap::Parser;
+use rand::Rng;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::fs;
@@ -19,7 +23,7 @@ use rayon::prelude::*;
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 struct Cli {
-    #[arg(short, long, num_args = 1.., value_delimiter = ' ', required = true)]
+    #[arg(short, long, num_args = 1.., value_delimiter = ' ', required_unless_present = "heuristic_data")]
     players: Vec<String>,
     #[arg(short, long, default_value_t = 100)]
     games: u32,
@@ -27,6 +31,9 @@ struct Cli {
     self_play: bool,
     #[arg(long, default_value_t = 2)]
     self_play_players: usize,
+    /// Generate training data from heuristic agent games (behavioral cloning bootstrap).
+    #[arg(long)]
+    heuristic_data: bool,
 }
 
 #[derive(Serialize)]
@@ -108,6 +115,14 @@ impl GameStats {
     }
 }
 
+fn find_latest_model(dir: &str) -> Option<String> {
+    fs::read_dir(dir).ok()?
+        .filter_map(Result::ok)
+        .filter(|e| e.path().extension().map_or(false, |ext| ext == "safetensors"))
+        .max_by_key(|e| e.metadata().unwrap().modified().unwrap())
+        .map(|e| e.path().to_string_lossy().to_string())
+}
+
 fn create_agent(name: &str) -> Box<dyn AIAgent> {
     let parts: Vec<&str> = name.split(':').collect();
     let agent_type = parts[0].to_lowercase();
@@ -117,8 +132,9 @@ fn create_agent(name: &str) -> Box<dyn AIAgent> {
         "heuristicai" => Box::new(HeuristicAI),
         "greedyai" => Box::new(GreedyAI),
         "convergenceai" => Box::new(ConvergenceAI::default()),
+        "clusterai" => Box::new(ClusterAI::default()),
         "mctsnn" => {
-            let iterations = if parts.len() > 1 { parts[1].parse::<u32>().unwrap_or(600) } else { 600 };
+            let iterations = if parts.len() > 1 { parts[1].parse::<u32>().unwrap_or(300) } else { 300 };
             let model_path = if parts.len() > 2 { Some(parts[2].to_string()) } else { None };
             Box::new(MctsNnAI::new(iterations, model_path, None))
         }
@@ -128,7 +144,9 @@ fn create_agent(name: &str) -> Box<dyn AIAgent> {
 
 fn main() -> std::io::Result<()> {
     let cli = Cli::parse();
-    if cli.self_play {
+    if cli.heuristic_data {
+        run_heuristic_data(cli)?;
+    } else if cli.self_play {
         run_self_play(cli)?;
     } else {
         run_simulations(cli)?;
@@ -146,26 +164,16 @@ fn run_self_play(cli: Cli) -> std::io::Result<()> {
         return Ok(());
     }
 
-    // --- MODIFIED SECTION: Auto-find latest model for self-play ---
+    // Auto-find latest model for self-play when no path is given.
     let parts: Vec<&str> = agent_config.split(':').collect();
     if parts[0].to_lowercase() == "mctsnn" && parts.len() < 3 {
-        let training_models_dir = "training_models";
-        fs::create_dir_all(training_models_dir)?;
-        let latest_model = fs::read_dir(training_models_dir)?
-            .filter_map(Result::ok)
-            .filter(|e| e.path().extension().map_or(false, |ext| ext == "safetensors"))
-            .max_by_key(|entry| entry.metadata().unwrap().created().unwrap());
-
-        if let Some(entry) = latest_model {
-            let path_str = entry.path().to_string_lossy().to_string();
+        if let Some(path_str) = find_latest_model("training_models") {
             println!("Found latest model for self-play: {}", path_str);
-            // Append the path to the agent config string
             agent_config = format!("{}:{}", agent_config, path_str);
         } else {
             println!("No existing model found. Starting self-play with a random brain.");
         }
     }
-    // --- END MODIFIED SECTION ---
 
     println!("Running {} {}-player self-play games to generate training data...", num_games, num_players);
     let start_time = Instant::now();
@@ -196,7 +204,7 @@ fn run_self_play(cli: Cli) -> std::io::Result<()> {
     let timestamp = Local::now().format("%Y-%m-%d_%H-%M-%S").to_string();
     let data_path = format!("training_data/data_{}.json", timestamp);
     let data_file = fs::File::create(&data_path)?;
-    serde_json::to_writer_pretty(data_file, &all_training_data)?;
+    serde_json::to_writer(BufWriter::new(data_file), &all_training_data)?;
     println!("Done. Data saved to '{}'", data_path);
     Ok(())
 }
@@ -210,11 +218,11 @@ fn run_one_self_play_game(agents: &mut [Box<dyn AIAgent>]) -> Vec<TrainingData> 
         while !game.is_round_over() {
             let player_idx = game.current_player_idx;
             let agent = &mut agents[player_idx];
-            let state_input_opt = agent.as_any().downcast_ref::<MctsNnAI>().and_then(|a| a.state_to_input(&game));
 
             if let Some(the_move) = agent.get_move(&game) {
+                // Capture state and policy after get_move so mcts is guaranteed initialized.
                 let mcts_agent = agent.as_any().downcast_ref::<MctsNnAI>().unwrap();
-                if let (Some(state_input), Some(mcts_policy)) = (state_input_opt, mcts_agent.get_mcts_policy()) {
+                if let (Some(state_input), Some(mcts_policy)) = (mcts_agent.state_to_input(&game), mcts_agent.get_mcts_policy()) {
                     history.push((state_input, mcts_policy, player_idx));
                 }
                 game.apply_move(&the_move);
@@ -228,18 +236,140 @@ fn run_one_self_play_game(agents: &mut [Box<dyn AIAgent>]) -> Vec<TrainingData> 
     game.apply_end_game_scoring();
 
     let mut training_data = Vec::new();
-    let winner_idx = game.players.iter().enumerate().max_by_key(|(_, p)| p.score).map(|(i, _)| i);
+    let best = game.players.iter().enumerate().max_by(|(_, a), (_, b)| {
+        a.score.cmp(&b.score).then(a.count_complete_rows().cmp(&b.count_complete_rows()))
+    });
+    let winner_idx = best.and_then(|(idx, winner)| {
+        let is_tie = game.players.iter().any(|p| {
+            p != winner
+                && p.score == winner.score
+                && p.count_complete_rows() == winner.count_complete_rows()
+        });
+        if is_tie { None } else { Some(idx) }
+    });
 
     for (state_input, mcts_policy, player_idx) in history {
-        let outcome = if Some(player_idx) == winner_idx { 1.0 } else { -1.0 };
+        let outcome = match winner_idx {
+            Some(w) if w == player_idx => 1.0,
+            None => 0.0,
+            _ => -1.0,
+        };
         training_data.push(TrainingData { state_input, mcts_policy, outcome });
     }
     training_data
 }
 
+fn run_heuristic_data(cli: Cli) -> std::io::Result<()> {
+    let num_games = cli.games;
+    println!("Running {} heuristic-agent games to generate bootstrap training data...", num_games);
+    let start_time = Instant::now();
+
+    let all_training_data: Vec<TrainingData> = (0..num_games)
+        .into_par_iter()
+        .flat_map(|_| run_one_heuristic_game())
+        .collect();
+
+    let duration = start_time.elapsed();
+    println!("\n--- Heuristic Data Generation Complete ---");
+    println!("Generated {} training samples in {:.2} seconds.", all_training_data.len(), duration.as_secs_f64());
+
+    println!("Saving training data...");
+    fs::create_dir_all("training_data")?;
+    let timestamp = Local::now().format("%Y-%m-%d_%H-%M-%S").to_string();
+    let data_path = format!("training_data/heuristic_{}.json", timestamp);
+    let data_file = fs::File::create(&data_path)?;
+    serde_json::to_writer(BufWriter::new(data_file), &all_training_data)?;
+    println!("Done. Data saved to '{}'", data_path);
+    Ok(())
+}
+
+fn run_one_heuristic_game() -> Vec<TrainingData> {
+    let mut rng = rand::thread_rng();
+    let num_players = rng.gen_range(2..=4usize);
+
+    // Build agents: pick randomly from HeuristicAI, GreedyAI, ConvergenceAI.
+    let mut agents: Vec<Box<dyn AIAgent>> = (0..num_players)
+        .map(|_| -> Box<dyn AIAgent> {
+            match rng.gen_range(0..3u8) {
+                0 => Box::new(HeuristicAI),
+                1 => Box::new(GreedyAI),
+                _ => Box::new(ConvergenceAI::default()),
+            }
+        })
+        .collect();
+
+    let mut game = GameState::new(num_players);
+    // (state_input, one_hot_policy, player_idx)
+    let mut history: Vec<(Vec<f32>, Vec<f32>, usize)> = Vec::new();
+
+    while !game.end_game_triggered {
+        while !game.is_round_over() {
+            let player_idx = game.current_player_idx;
+            let state_input = encode_state(&game);
+            if let Some(mv) = agents[player_idx].get_move(&game) {
+                let mut policy = vec![0.0f32; POLICY_SIZE];
+                if let Some(idx) = move_to_policy_index(mv.tile, &mv.source) {
+                    policy[idx] = 1.0;
+                }
+                history.push((state_input, policy, player_idx));
+                game.apply_move(&mv);
+            } else {
+                break;
+            }
+        }
+        game.run_tiling_phase();
+        if !game.end_game_triggered { game.refill_factories(); }
+    }
+    game.apply_end_game_scoring();
+
+    let best = game.players.iter().enumerate().max_by(|(_, a), (_, b)| {
+        a.score.cmp(&b.score).then(a.count_complete_rows().cmp(&b.count_complete_rows()))
+    });
+    let winner_idx = best.and_then(|(idx, winner)| {
+        let is_tie = game.players.iter().any(|p| {
+            p != winner
+                && p.score == winner.score
+                && p.count_complete_rows() == winner.count_complete_rows()
+        });
+        if is_tie { None } else { Some(idx) }
+    });
+
+    history.into_iter().map(|(state_input, mcts_policy, player_idx)| {
+        let outcome = match winner_idx {
+            Some(w) if w == player_idx => 1.0,
+            None => 0.0,
+            _ => -1.0,
+        };
+        TrainingData { state_input, mcts_policy, outcome }
+    }).collect()
+}
+
+/// Expand any `mctsnn` entry that has no model path with auto-discovery, logging once.
+fn resolve_agent_names(names: Vec<String>) -> Vec<String> {
+    names.into_iter().map(|name| {
+        let parts: Vec<&str> = name.split(':').collect();
+        if parts[0].to_lowercase() == "mctsnn" && parts.len() < 3 {
+            let path = find_latest_model("release_models")
+                .or_else(|| find_latest_model("training_models"));
+            match path {
+                Some(p) => {
+                    println!("mctsnn: auto-selected model '{}'", p);
+                    format!("{}:{}", name, p)
+                }
+                None => {
+                    println!("mctsnn: no model found, using random weights");
+                    name
+                }
+            }
+        } else {
+            name
+        }
+    }).collect()
+}
+
 fn run_simulations(cli: Cli) -> std::io::Result<()> {
     let num_games = cli.games;
-    let agent_config = cli.players;
+    let agent_config = resolve_agent_names(cli.players);
     println!("Running {} {}-player games in parallel...", num_games, agent_config.len());
     let start_time = Instant::now();
 
@@ -262,7 +392,7 @@ fn run_simulations(cli: Cli) -> std::io::Result<()> {
     }
     let mut game_logs: Vec<GameLog> = Vec::with_capacity(num_games as usize);
     for (final_state, game_log) in game_results {
-        stats.record_game(&final_state, &agent_config);
+        stats.record_game(&final_state, &game_log.matchup);
         game_logs.push(game_log);
     }
 
@@ -284,6 +414,17 @@ fn run_simulations(cli: Cli) -> std::io::Result<()> {
     let mut encoder = zstd::Encoder::new(buf, 3)?;
     serde_json::to_writer(&mut encoder, &game_logs)?;
     encoder.finish()?;
+
+    // Update ELO ratings and mark this file as processed so the elo binary won't double-count.
+    let mut elo = EloState::load();
+    for log in &game_logs {
+        elo.update_game(&log.matchup, &log.final_scores);
+    }
+    elo.processed_files.insert(logs_path.clone());
+    match elo.save() {
+        Ok(_) => elo.print_leaderboard(),
+        Err(e) => eprintln!("Warning: could not save ELO ratings: {}", e),
+    }
 
     println!("Done. Results saved in '{}' directory.", output_dir);
     Ok(())

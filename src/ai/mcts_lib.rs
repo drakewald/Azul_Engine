@@ -33,7 +33,10 @@ pub struct Node {
     /// `Some(vec)` — evaluated; covers all legal moves including unexpanded ones.
     pub priors: Option<Vec<(Move, f32)>>,
     pub visit_count: u32,
-    pub total_action_value: f32,
+    /// Per-player accumulated values: total_action_values[i] is the sum of NN value
+    /// estimates for player i from all simulations passing through this node.
+    /// Indexed by absolute player index (0–3). Correct for 2–4 player games.
+    pub total_action_values: [f32; 4],
     pub prior_probability: f32,
     /// The move that was applied to reach this node from its parent.
     /// `None` for the root node.
@@ -60,7 +63,7 @@ impl Node {
             children: ChildVec::new(),
             priors: None,
             visit_count: 0,
-            total_action_value: 0.0,
+            total_action_values: [0.0f32; 4],
             prior_probability: prior,
             applied_move,
             current_player_idx,
@@ -71,11 +74,11 @@ impl Node {
     }
 
     #[inline]
-    pub fn mean_action_value(&self) -> f32 {
+    pub fn mean_action_value(&self, player_idx: usize) -> f32 {
         if self.visit_count == 0 {
             0.0
         } else {
-            self.total_action_value / self.visit_count as f32
+            self.total_action_values[player_idx] / self.visit_count as f32
         }
     }
 }
@@ -279,11 +282,10 @@ impl<P: MctsPolicy + Clone> Mcts<P> {
         while let Some(idx) = current_idx {
             let node = &mut self.tree[idx];
             node.visit_count += 1;
-            if node.current_player_idx == player_at_leaf {
-                node.total_action_value += value;
-            } else {
-                node.total_action_value -= value;
-            }
+            // Store value in the leaf player's slot. Each player's accumulated value is
+            // tracked independently, avoiding the zero-sum assumption that breaks for 3+
+            // players (where treating opponents' wins symmetrically is incorrect).
+            node.total_action_values[player_at_leaf] += value;
             current_idx = node.parent;
         }
     }
@@ -296,6 +298,8 @@ impl<P: MctsPolicy + Clone> Mcts<P> {
         let priors = node.priors.as_ref().unwrap();
         let exploration_constant = 1.41;
         let eff_visits = node.visit_count + node.virtual_visits;
+        // The selecting player's index — Q is from their perspective.
+        let selecting_player = node.current_player_idx;
 
         // Progressive widening: expand ceil(2 * sqrt(visits)) candidates, min 1.
         let max_candidates = ((2.0 * (eff_visits as f32).sqrt()).ceil() as usize)
@@ -316,7 +320,12 @@ impl<P: MctsPolicy + Clone> Mcts<P> {
                     let eff_q = if eff_n == 0 {
                         0.0
                     } else {
-                        -(child.total_action_value - child.virtual_loss) / eff_n as f32
+                        // Use the selecting player's accumulated value directly.
+                        // No negation: total_action_values[p] grows when player p wins,
+                        // so higher Q = more wins for the selecting player. Works correctly
+                        // for 2, 3, and 4 player games without the zero-sum assumption.
+                        (child.total_action_values[selecting_player] - child.virtual_loss)
+                            / eff_n as f32
                     };
                     (eff_q, eff_n)
                 } else {

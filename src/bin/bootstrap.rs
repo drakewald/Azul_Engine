@@ -16,7 +16,7 @@ const POLICY_LOSS_WEIGHT: f64 = 1.0;
 const EPOCHS: usize = 10;
 const BATCH_SIZE: usize = 64;
 const TOURNAMENT_GAMES: u32 = 400;
-const TOURNAMENT_MCTS_ITERS: u32 = 600;
+const TOURNAMENT_MCTS_ITERS: u32 = 300;
 
 fn determine_winner(game: &GameState) -> Option<usize> {
     let best = game.players.iter().enumerate().max_by(|(_, a), (_, b)| {

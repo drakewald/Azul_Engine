@@ -29,8 +29,6 @@ impl AIAgent for HeuristicAI {
             }
         }
 
-        // Change A: removed Priority 4 (find_first_move_priority) — too narrow
-
         // Main Heuristic: Find the best general-purpose move
         find_best_general_move(game_state, &legal_moves)
     }
